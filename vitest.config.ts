@@ -14,7 +14,10 @@ export default defineConfig({
       // jiti-compiled copies of workflow modules don't pollute the report.
       provider: "istanbul",
       include: ["src/**"],
-      exclude: ["src/viewer/tui.ts"],
+      // Both need a real TUI/Theme the test harness cannot produce, and the
+      // e2e suite runs --mode rpc where the overlay factory never runs. The
+      // logic they drive lives in src/render/run-view.ts and is tested there.
+      exclude: ["src/viewer/tui.ts", "src/extension/overlay.ts"],
       thresholds: {
         lines: 85,
         functions: 85,

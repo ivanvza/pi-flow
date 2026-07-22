@@ -12,7 +12,7 @@ const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const PI_BIN = path.join(REPO_ROOT, "node_modules", ".bin", "pi");
 const EXTENSION_PATH = path.join(REPO_ROOT, "src", "extension", "index.ts");
 
-const E2E_WORKFLOW = `import { agent, decision, decisionEdge, defineWorkflow, shell } from "pi-workflows";
+const E2E_WORKFLOW = `import { agent, decision, decisionEdge, defineWorkflow, shell } from "pi-flow";
 
 const choices = ["y", "n"] as const;
 
@@ -160,7 +160,7 @@ async function waitForRunState(
   }
 }
 
-describe.sequential("pi-workflows end to end", () => {
+describe.sequential("pi-flow end to end", () => {
   let mock: Awaited<ReturnType<typeof startMockOpenAiServer>>;
   let pi: RpcHandle;
   let runsDir: string;
@@ -206,9 +206,9 @@ describe.sequential("pi-workflows end to end", () => {
       return { kind: "text", text: "Nothing to do." };
     });
 
-    projectDir = await makeTempDir("pi-workflows-e2e-project");
-    runsDir = await makeTempDir("pi-workflows-e2e-runs");
-    const agentDir = await makeTempDir("pi-workflows-e2e-agent");
+    projectDir = await makeTempDir("pi-flow-e2e-project");
+    runsDir = await makeTempDir("pi-flow-e2e-runs");
+    const agentDir = await makeTempDir("pi-flow-e2e-agent");
 
     await fs.mkdir(path.join(projectDir, ".pi", "workflows"), { recursive: true });
     await fs.writeFile(

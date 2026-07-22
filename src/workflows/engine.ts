@@ -218,17 +218,7 @@ export class WorkflowEngine {
 
       const attempt = await this.executeNode(workflow, state, runDir, currentNodeId, node);
       this.recordAttempt(state, attempt);
-      await this.persist(runDir, state, {
-        scope: "node",
-        type: attempt.result.outcome === "ok" ? "node_finished" : "node_failed",
-        nodeId: attempt.result.nodeId,
-        attemptId: attempt.result.attemptId,
-        payload: {
-          outcome: attempt.result.outcome,
-          durationMs: attempt.result.durationMs,
-          ...(attempt.result.error !== undefined ? { error: attempt.result.error } : {}),
-        },
-      });
+      await this.persistNodeOutcome(runDir, state, attempt.result);
 
       if (attempt.result.outcome !== "ok") {
         currentNodeId = this.routeAfterFailure(workflow, state, attempt);
@@ -236,22 +226,108 @@ export class WorkflowEngine {
       }
 
       lastOutput = attempt.result.output;
-      if (node.nodeType === "checkpoint") {
-        await this.finishRun(runDir, state, "waiting", {
-          waitingOn: attempt.result.nodeId,
-          finalOutput: lastOutput,
-        });
-        return;
-      }
-      currentNodeId = resolveNext(
+      // Resolved before the checkpoint branch so the park can tell a terminal
+      // checkpoint (no outgoing edge) from a resumable one. A malformed switch
+      // edge out of a checkpoint therefore fails the run instead of parking a
+      // run that could never route anywhere.
+      const next = resolveNext(
         workflow.edges,
         attempt.result.nodeId,
         attempt.result.output,
         attempt.result,
       );
+      if (
+        node.nodeType === "checkpoint" &&
+        !(await this.parkAtCheckpoint(runDir, state, attempt.result.nodeId, lastOutput, next))
+      ) {
+        return;
+      }
+      currentNodeId = next;
     }
 
     await this.finishRun(runDir, state, "completed", { finalOutput: lastOutput });
+  }
+
+  private async persistNodeOutcome(
+    runDir: string,
+    state: WorkflowRunState,
+    result: WorkflowNodeResult,
+  ): Promise<void> {
+    await this.persist(runDir, state, {
+      scope: "node",
+      type: result.outcome === "ok" ? "node_finished" : "node_failed",
+      nodeId: result.nodeId,
+      attemptId: result.attemptId,
+      payload: {
+        outcome: result.outcome,
+        durationMs: result.durationMs,
+        ...(result.error !== undefined ? { error: result.error } : {}),
+      },
+    });
+  }
+
+  /**
+   * Park a checkpoint. A checkpoint with no outgoing edge ends the run as
+   * `waiting` (returns false); one that declares an edge holds the live run
+   * loop until `resume` or `cancel` and then routes on (returns true).
+   */
+  // ponytail: in-session resume only — the hold lives in this engine instance,
+  // so quitting pi abandons the run (cancel() on shutdown is best-effort; if the
+  // process exits first the bundle stays `waiting` with no finishedAt, which
+  // readers treat as abandoned). One /workflow resume releases both a checkpoint
+  // park and a concurrent /workflow pause, since they share this.paused.
+  // Upgrade path if parked runs must survive a restart: rehydrate from the bundle
+  // (reload manifest.workflowPath for the real node fns, rebuild the executor,
+  // seed WorkflowRunStore's in-memory trace seq from trace.ndjson) and re-enter
+  // executeGraph at `next` with executedSteps = state.steps.length.
+  private async parkAtCheckpoint(
+    runDir: string,
+    state: WorkflowRunState,
+    nodeId: string,
+    output: unknown,
+    next: string | null,
+  ): Promise<boolean> {
+    if (next === null) {
+      await this.finishRun(runDir, state, "waiting", { waitingOn: nodeId, finalOutput: output });
+      return false;
+    }
+    // Set before the persist so a resume racing the filesystem write clears the
+    // flag and `waitForResume` returns immediately; the reverse order would drop
+    // that resume and park forever. No `finishedAt` and no `finalOutput`: the run
+    // has not finished and this output is not final.
+    this.paused = true;
+    state.status = "waiting";
+    state.waitingOn = nodeId;
+    await this.persist(runDir, state, {
+      scope: "run",
+      type: "run_waiting",
+      payload: { status: "waiting", waitingOn: nodeId },
+    });
+    await this.waitForResume();
+    if (this.cancelled) {
+      // Cleared on the cancel path too, so a cancelled run never renders as
+      // parked on the checkpoint it stopped at.
+      delete state.waitingOn;
+      throw new CancelledError();
+    }
+    state.status = "running";
+    delete state.waitingOn;
+    await this.persist(runDir, state, { scope: "run", type: "run_resumed", payload: {} });
+    return true;
+  }
+
+  /**
+   * Block until `resume` or `cancel` fires. Stays a `while` rather than a
+   * do-while so a cancel that lands before the hold is entered is observable
+   * instead of parking forever.
+   */
+  private async waitForResume(): Promise<void> {
+    while (this.paused && !this.cancelled) {
+      await new Promise<void>((resolve) => {
+        this.wakePause = resolve;
+      });
+    }
+    this.wakePause = null;
   }
 
   /**
@@ -267,12 +343,7 @@ export class WorkflowEngine {
     }
     state.paused = true;
     await this.persist(runDir, state, { scope: "run", type: "run_paused", payload: {} });
-    while (this.paused && !this.cancelled) {
-      await new Promise<void>((resolve) => {
-        this.wakePause = resolve;
-      });
-    }
-    this.wakePause = null;
+    await this.waitForResume();
     delete state.paused;
     if (this.cancelled) {
       throw new CancelledError();

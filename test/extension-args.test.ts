@@ -7,10 +7,20 @@ describe("parseWorkflowArgs", () => {
     expect(parseWorkflowArgs("   ")).toEqual({ kind: "list" });
   });
 
-  it("parses cancel, pause, and resume", () => {
+  it("parses list, runs, cancel, pause, and resume", () => {
+    expect(parseWorkflowArgs("list")).toEqual({ kind: "list" });
+    expect(parseWorkflowArgs("runs")).toEqual({ kind: "runs" });
     expect(parseWorkflowArgs("cancel")).toEqual({ kind: "cancel" });
     expect(parseWorkflowArgs("pause")).toEqual({ kind: "pause" });
     expect(parseWorkflowArgs("resume")).toEqual({ kind: "resume" });
+  });
+
+  it("treats a subcommand with trailing text as a workflow ref", () => {
+    expect(parseWorkflowArgs("runs extra")).toEqual({
+      kind: "run",
+      ref: "runs",
+      input: { task: "extra" },
+    });
   });
 
   it("parses a bare workflow ref", () => {
@@ -50,9 +60,9 @@ describe("parseWorkflowArgs", () => {
   });
 
   it("supports path refs", () => {
-    expect(parseWorkflowArgs("./examples/workflows/echo.workflow.ts hello")).toEqual({
+    expect(parseWorkflowArgs("./.pi/workflows/echo.workflow.ts hello")).toEqual({
       kind: "run",
-      ref: "./examples/workflows/echo.workflow.ts",
+      ref: "./.pi/workflows/echo.workflow.ts",
       input: { task: "hello" },
     });
   });

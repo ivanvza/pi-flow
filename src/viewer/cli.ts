@@ -2,21 +2,21 @@
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { sanitizeText } from "../render/ansi.js";
-import { listRunBundles, readRunBundle, workflowRunsBaseDir } from "../workflows/store.js";
 import {
   formatDuration,
   renderRunDetailLines,
   renderRunListLines,
   runElapsedMs,
   statusLabel,
-} from "./render.js";
+} from "../render/run-view.js";
+import { listRunBundles, readRunBundle, workflowRunsBaseDir } from "../workflows/store.js";
 import { runViewer } from "./tui.js";
 
-const USAGE = `pi-workflows — live terminal viewer for pi workflow runs
+const USAGE = `pi-flow — live terminal viewer for pi workflow runs
 
 Usage:
-  pi-workflows view [runId] [--dir <runsDir>] [--once]
-  pi-workflows runs [--dir <runsDir>]
+  pi-flow view [runId] [--dir <runsDir>] [--once]
+  pi-flow runs [--dir <runsDir>]
 
 Commands:
   view   Open the live TUI viewer. With --once, print a snapshot and exit.

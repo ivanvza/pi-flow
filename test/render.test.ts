@@ -6,7 +6,7 @@ import {
   renderRunDetailLines,
   renderRunListLines,
   runElapsedMs,
-} from "../src/viewer/render.js";
+} from "../src/render/run-view.js";
 import { compute, defineWorkflow } from "../src/workflows/definition.js";
 import { createDefinitionSnapshot } from "../src/workflows/store.js";
 import type { LoadedRunBundle } from "../src/workflows/store.js";

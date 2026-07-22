@@ -4,10 +4,15 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { runListItems } from "../render/run-view.js";
 import { WorkflowEngine } from "../workflows/engine.js";
 import { errorMessage } from "../workflows/errors.js";
 import { discoverWorkflows, loadWorkflowFile, resolveWorkflowRef } from "../workflows/loader.js";
-import { createDefinitionSnapshot } from "../workflows/store.js";
+import {
+  createDefinitionSnapshot,
+  listRunBundles,
+  workflowRunsBaseDir,
+} from "../workflows/store.js";
 import type {
   WorkflowDefinition,
   WorkflowDefinitionSnapshot,
@@ -15,10 +20,11 @@ import type {
   WorkflowRunState,
 } from "../workflows/types.js";
 import { ConversationStepExecutor } from "./executor.js";
+import { pickFromList, showRunDetail } from "./overlay.js";
 import { buildWidgetView } from "./widget.js";
 
-const WIDGET_KEY = "pi-workflows";
-const PRESENTATION_MESSAGE_TYPE = "pi-workflows-presentation";
+const WIDGET_KEY = "pi-flow";
+const PRESENTATION_MESSAGE_TYPE = "pi-flow-presentation";
 const FINAL_WIDGET_TTL_MS = 60_000;
 const WIDGET_SCROLL_STEP = 3;
 const MAX_PRESENTATION_RESULT_CHARS = 50_000;
@@ -45,6 +51,7 @@ type ActiveRun = {
 
 export type ParsedWorkflowArgs =
   | { kind: "list" }
+  | { kind: "runs" }
   | { kind: "cancel" }
   | { kind: "pause" }
   | { kind: "resume" }
@@ -56,7 +63,13 @@ export function parseWorkflowArgs(args: string): ParsedWorkflowArgs {
   if (trimmed.length === 0) {
     return { kind: "list" };
   }
-  if (trimmed === "cancel" || trimmed === "pause" || trimmed === "resume") {
+  if (
+    trimmed === "cancel" ||
+    trimmed === "list" ||
+    trimmed === "pause" ||
+    trimmed === "resume" ||
+    trimmed === "runs"
+  ) {
     return { kind: trimmed };
   }
   const spaceIndex = trimmed.search(/\s/);
@@ -129,12 +142,45 @@ export default function piWorkflows(pi: ExtensionAPI) {
     }
   };
 
+  // Overlays are terminal-only: `custom()` silently resolves undefined in rpc
+  // and print modes, and `hasUI` is true in rpc, so it is the wrong guard.
+  const extensionMode = (ctx: ExtensionContext): string => {
+    try {
+      return ctx.mode;
+    } catch {
+      // Stale ctx; assume the least capable mode.
+      return "print";
+    }
+  };
+
   /** True when the run is held for the user (escape or /workflow pause). */
   const runHeld = (): boolean =>
     activeRun !== null && (activeRun.engine.pauseRequested || activeRun.executor.held);
 
+  /** The checkpoint a live run is parked at, if any. */
+  const parkedAt = (): string | undefined =>
+    activeRun?.lastState?.status === "waiting" ? activeRun.lastState.waitingOn : undefined;
+
+  /**
+   * A checkpoint with no outgoing edge ends the run. Say that plainly, name the
+   * only command that applies, and point at what would make it resumable —
+   * otherwise the widget reads `waiting` while resume says nothing is running.
+   */
+  const endedAtCheckpoint = (state: WorkflowRunState): string | null =>
+    state.status === "waiting" && state.waitingOn
+      ? `Workflow ${state.workflowName} ended at checkpoint ${state.waitingOn} — nothing follows it, so there is nothing to resume. /workflow cancel to clear it. (Give the checkpoint an outgoing edge to make it resumable.) (run ${state.runId})`
+      : null;
+
+  /** What pause/resume should say when no run is live but a widget is still up. */
+  const idleNote = (): string =>
+    (widgetSource && endedAtCheckpoint(widgetSource.state)) ?? "No workflow is running.";
+
+  /** A run parked at a checkpoint reads as waiting, not paused. */
+  const runPaused = (state: WorkflowRunState): boolean =>
+    state.status !== "waiting" && (runHeld() || state.paused === true);
+
   const footerStatus = (state: WorkflowRunState): string => {
-    const label = runHeld() || state.paused ? "paused" : state.status;
+    const label = runPaused(state) ? "paused" : state.status;
     const node = state.currentNode ?? state.waitingOn;
     return `wf ${state.workflowName} [${label}]${node ? ` ${node}` : ""}`;
   };
@@ -143,7 +189,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
     if (!widgetSource) {
       return;
     }
-    const held = runHeld();
+    const held = runPaused(widgetSource.state);
     const view = buildWidgetView(
       widgetSource.state,
       widgetSource.snapshot,
@@ -305,18 +351,20 @@ export default function piWorkflows(pi: ExtensionAPI) {
       widgetTimer.unref?.();
     }
     const summary =
-      state.status === "waiting" && state.waitingOn
-        ? `Workflow ${state.workflowName} parked at checkpoint ${state.waitingOn} — run ended, awaiting your decision (run ${state.runId})`
-        : `Workflow ${state.workflowName} ${state.status} (run ${state.runId})`;
+      endedAtCheckpoint(state) ??
+      `Workflow ${state.workflowName} ${state.status} (run ${state.runId})`;
     notify(ctx, summary, state.status === "completed" ? "info" : "warning");
     void presentRun(ctx, run, state);
   };
 
   const startRun = async (ctx: ExtensionCommandContext, ref: string, input: unknown) => {
     if (activeRun) {
+      const at = parkedAt();
       notify(
         ctx,
-        `A workflow is already running: ${activeRun.workflowName}. Use /workflow cancel first.`,
+        at
+          ? `Workflow ${activeRun.workflowName} is parked at checkpoint ${at}. Use /workflow resume to continue it or /workflow cancel to drop it.`
+          : `A workflow is already running: ${activeRun.workflowName}. Use /workflow cancel first.`,
         "error",
       );
       return;
@@ -342,8 +390,20 @@ export default function piWorkflows(pi: ExtensionAPI) {
         if (run.runId === null) {
           run.runId = state.runId;
         }
+        // A resumable park never resolves engine.run(), so it never reaches
+        // finishRun; announce it here instead. A terminal checkpoint has no
+        // outgoing edge and keeps its own message in finishRun.
+        const parked =
+          state.status === "waiting" &&
+          snapshot.edges.some((edge) => edge.from === state.waitingOn);
         run.lastState = state;
         updateWidget(ctx, state, snapshot);
+        if (parked) {
+          notify(
+            ctx,
+            `Workflow ${state.workflowName} parked at checkpoint ${state.waitingOn} — /workflow resume to continue, /workflow cancel to stop (run ${state.runId})`,
+          );
+        }
       },
     });
     const run: ActiveRun = {
@@ -359,7 +419,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
     activeRun = run;
     clearWidgetTimer();
     startWidgetTicker(ctx, run);
-    notify(ctx, `Workflow ${workflow.name} started. Follow it live with: pi-workflows view`);
+    notify(ctx, `Workflow ${workflow.name} started. Follow it live with: pi-flow view`);
 
     engine
       .run(workflow, input, { workflowPath: resolved.path })
@@ -374,6 +434,63 @@ export default function piWorkflows(pi: ExtensionAPI) {
       });
   };
 
+  const startRunGuarded = async (ctx: ExtensionCommandContext, ref: string, input: unknown) => {
+    try {
+      await startRun(ctx, ref, input);
+    } catch (error) {
+      notify(ctx, `Could not start workflow: ${errorMessage(error)}`, "error");
+    }
+  };
+
+  /** Pick a workflow by name, degrading from overlay to dialog to notify. */
+  const chooseWorkflow = async (
+    ctx: ExtensionCommandContext,
+    discovered: Awaited<ReturnType<typeof discoverWorkflows>>,
+  ): Promise<string | null> => {
+    const mode = extensionMode(ctx);
+    if (mode === "tui") {
+      return await pickFromList(
+        ctx,
+        "Workflows",
+        discovered.map((workflow) => ({
+          value: workflow.name,
+          label: workflow.name,
+          description: workflow.source,
+        })),
+      );
+    }
+    if (mode === "rpc") {
+      try {
+        return (
+          (await ctx.ui.select(
+            "Workflows",
+            discovered.map((workflow) => workflow.name),
+          )) ?? null
+        );
+      } catch {
+        // Stale ctx; the dialog has nowhere to go.
+        return null;
+      }
+    }
+    const names = discovered.map((workflow) => `${workflow.name} (${workflow.source})`).join(", ");
+    notify(ctx, `Workflows: ${names}. Run one with /workflow <name> [task].`);
+    return null;
+  };
+
+  /** Optional task text for the chosen workflow; undefined means abort. */
+  const promptTask = async (
+    ctx: ExtensionCommandContext,
+    name: string,
+  ): Promise<string | undefined> => {
+    try {
+      const answer = await ctx.ui.input(`/workflow ${name}`, "task (optional) — enter to run");
+      return answer === undefined ? undefined : answer.trim();
+    } catch {
+      // Stale ctx; treat it as an abort rather than starting a blind run.
+      return undefined;
+    }
+  };
+
   const listWorkflows = async (ctx: ExtensionCommandContext) => {
     const discovered = await discoverWorkflows({ cwd: ctx.cwd });
     if (discovered.length === 0) {
@@ -384,17 +501,138 @@ export default function piWorkflows(pi: ExtensionAPI) {
       );
       return;
     }
-    const names = discovered.map((workflow) => `${workflow.name} (${workflow.source})`).join(", ");
-    notify(ctx, `Workflows: ${names}. Run one with /workflow <name> [task].`);
+    const name = await chooseWorkflow(ctx, discovered);
+    if (name === null) {
+      return;
+    }
+    const task = await promptTask(ctx, name);
+    if (task === undefined) {
+      return;
+    }
+    await startRunGuarded(ctx, name, task.length > 0 ? { task } : {});
+  };
+
+  /** Browse run bundles: an overlay list feeding a live detail overlay. */
+  const browseRuns = async (ctx: ExtensionCommandContext) => {
+    const dir = workflowRunsBaseDir();
+    if (extensionMode(ctx) !== "tui") {
+      const bundles = await listRunBundles(dir);
+      if (bundles.length === 0) {
+        notify(ctx, `No workflow runs in ${dir}`, "warning");
+        return;
+      }
+      const recent = bundles
+        .slice(0, 5)
+        .map((bundle) => bundle.state.runId)
+        .join(", ");
+      notify(ctx, `Recent runs: ${recent}. View one with: pi-flow view <runId>`);
+      return;
+    }
+    let index = 0;
+    for (;;) {
+      // Re-read per iteration only. listRunBundles reads every bundle's
+      // manifest, state and snapshot, so it must never run on a timer.
+      const bundles = await listRunBundles(dir);
+      if (bundles.length === 0) {
+        notify(ctx, `No workflow runs in ${dir}`, "warning");
+        return;
+      }
+      index = Math.min(index, bundles.length - 1);
+      const picked = await pickFromList(ctx, "Workflow runs", runListItems(bundles), index);
+      if (picked === null) {
+        return;
+      }
+      index = Math.max(
+        0,
+        bundles.findIndex((bundle) => bundle.runDir === picked),
+      );
+      // Sequential, never stacked: done() pops the topmost overlay.
+      await showRunDetail(ctx, picked);
+    }
+  };
+
+  const cancelRun = async (ctx: ExtensionCommandContext) => {
+    if (activeRun) {
+      activeRun.engine.cancel();
+      notify(ctx, `Cancelling workflow ${activeRun.workflowName}…`);
+      return;
+    }
+    // No live run, but a parked (waiting) or recently finished run may
+    // still occupy the widget; cancel clears it.
+    if (widgetSource) {
+      const { state } = widgetSource;
+      clearWidgetTimer();
+      clearWidget(ctx);
+      const detail =
+        state.status === "waiting" && state.waitingOn
+          ? `already ended at checkpoint ${state.waitingOn}`
+          : `already ${state.status}`;
+      notify(ctx, `Workflow ${state.workflowName} ${detail}; cleared its widget.`);
+      return;
+    }
+    notify(ctx, "No workflow is running.", "warning");
+  };
+
+  const pauseRun = async (ctx: ExtensionCommandContext) => {
+    if (!activeRun) {
+      notify(ctx, idleNote(), "warning");
+      return;
+    }
+    const at = parkedAt();
+    if (at) {
+      notify(
+        ctx,
+        `Workflow ${activeRun.workflowName} is parked at checkpoint ${at}. /workflow resume to continue, /workflow cancel to stop.`,
+      );
+      return;
+    }
+    if (runHeld()) {
+      notify(ctx, `Workflow ${activeRun.workflowName} is already pausing or paused.`);
+      return;
+    }
+    activeRun.engine.pause();
+    renderWidget(ctx);
+    notify(
+      ctx,
+      `Pausing workflow ${activeRun.workflowName} — the current step finishes, then the run holds. /workflow resume to continue.`,
+    );
+  };
+
+  const resumeRun = async (ctx: ExtensionCommandContext) => {
+    if (!activeRun) {
+      notify(ctx, idleNote(), "warning");
+      return;
+    }
+    if (!runHeld()) {
+      notify(ctx, `Workflow ${activeRun.workflowName} is not paused.`);
+      return;
+    }
+    activeRun.engine.resume();
+    activeRun.executor.release();
+    renderWidget(ctx);
+    notify(ctx, `Workflow ${activeRun.workflowName} resumed.`);
+  };
+
+  const SUBCOMMANDS: Record<
+    "list" | "runs" | "cancel" | "pause" | "resume",
+    (ctx: ExtensionCommandContext) => Promise<void>
+  > = {
+    list: listWorkflows,
+    runs: browseRuns,
+    cancel: cancelRun,
+    pause: pauseRun,
+    resume: resumeRun,
   };
 
   pi.registerCommand("workflow", {
     description:
-      "Run a workflow: /workflow <name-or-path> [task | --input-json {…}]; also: pause, resume, cancel",
+      "Run a workflow: /workflow <name-or-path> [task | --input-json {…}]; also: list, runs, pause, resume, cancel",
     getArgumentCompletions: async (prefix: string) => {
       const discovered = await discoverWorkflows({ cwd: process.cwd() });
       const items = [
         ...discovered.map((workflow) => ({ value: workflow.name, label: workflow.name })),
+        { value: "list", label: "list" },
+        { value: "runs", label: "runs" },
         { value: "pause", label: "pause" },
         { value: "resume", label: "resume" },
         { value: "cancel", label: "cancel" },
@@ -409,69 +647,11 @@ export default function piWorkflows(pi: ExtensionAPI) {
         notify(ctx, errorMessage(error), "error");
         return;
       }
-      if (parsed.kind === "list") {
-        await listWorkflows(ctx);
+      if (parsed.kind === "run") {
+        await startRunGuarded(ctx, parsed.ref, parsed.input);
         return;
       }
-      if (parsed.kind === "cancel") {
-        if (activeRun) {
-          activeRun.engine.cancel();
-          notify(ctx, `Cancelling workflow ${activeRun.workflowName}…`);
-          return;
-        }
-        // No live run, but a parked (waiting) or recently finished run may
-        // still occupy the widget; cancel clears it.
-        if (widgetSource) {
-          const { state } = widgetSource;
-          clearWidgetTimer();
-          clearWidget(ctx);
-          const detail =
-            state.status === "waiting" && state.waitingOn
-              ? `already ended at checkpoint ${state.waitingOn}`
-              : `already ${state.status}`;
-          notify(ctx, `Workflow ${state.workflowName} ${detail}; cleared its widget.`);
-          return;
-        }
-        notify(ctx, "No workflow is running.", "warning");
-        return;
-      }
-      if (parsed.kind === "pause") {
-        if (!activeRun) {
-          notify(ctx, "No workflow is running.", "warning");
-          return;
-        }
-        if (runHeld()) {
-          notify(ctx, `Workflow ${activeRun.workflowName} is already pausing or paused.`);
-          return;
-        }
-        activeRun.engine.pause();
-        renderWidget(ctx);
-        notify(
-          ctx,
-          `Pausing workflow ${activeRun.workflowName} — the current step finishes, then the run holds. /workflow resume to continue.`,
-        );
-        return;
-      }
-      if (parsed.kind === "resume") {
-        if (!activeRun) {
-          notify(ctx, "No workflow is running.", "warning");
-          return;
-        }
-        if (!runHeld()) {
-          notify(ctx, `Workflow ${activeRun.workflowName} is not paused.`);
-          return;
-        }
-        activeRun.engine.resume();
-        activeRun.executor.release();
-        renderWidget(ctx);
-        notify(ctx, `Workflow ${activeRun.workflowName} resumed.`);
-        return;
-      }
-      try {
-        await startRun(ctx, parsed.ref, parsed.input);
-      } catch (error) {
-        notify(ctx, `Could not start workflow: ${errorMessage(error)}`, "error");
-      }
+      await SUBCOMMANDS[parsed.kind](ctx);
     },
   });
 

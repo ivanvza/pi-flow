@@ -105,9 +105,12 @@ export type ShellActionNodeDefinition = WorkflowNodeCommon & {
 export type ActionNodeDefinition = FunctionActionNodeDefinition | ShellActionNodeDefinition;
 
 /**
- * A pause point. The run terminates with status `waiting` so a human (or an
- * external trigger) can decide how to continue. The optional `run` callback
- * produces the checkpoint's output before the run pauses.
+ * A pause point. The run records status `waiting` so a human (or an external
+ * trigger) can decide how to continue. With no outgoing edge that ends the run
+ * and the checkpoint output is the run's final output; with an outgoing edge
+ * the run holds until it is resumed and then routes through that edge. The
+ * optional `run` callback produces the checkpoint's output before the run
+ * parks.
  */
 export type CheckpointNodeDefinition = WorkflowNodeCommon & {
   nodeType: "checkpoint";

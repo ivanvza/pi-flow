@@ -1,20 +1,8 @@
 import { ansi, stripAnsi } from "../render/ansi.js";
 import { renderGraphLines } from "../render/graph-render.js";
+import { STATUS_GLYPHS } from "../render/run-view.js";
 import { sanitizeText } from "../workflows/text.js";
-import type {
-  WorkflowDefinitionSnapshot,
-  WorkflowRunState,
-  WorkflowRunStatus,
-} from "../workflows/types.js";
-
-const STATUS_GLYPHS: Record<WorkflowRunStatus, string> = {
-  running: "◐",
-  waiting: "⏸",
-  completed: "✓",
-  failed: "✗",
-  timed_out: "✗",
-  cancelled: "✗",
-};
+import type { WorkflowDefinitionSnapshot, WorkflowRunState } from "../workflows/types.js";
 
 /**
  * pi renders at most this many widget lines (InteractiveMode.MAX_WIDGET_LINES)

@@ -1,6 +1,6 @@
 # Workflow authoring reference
 
-This document is the authoring reference for pi-workflows definitions. It
+This document is the authoring reference for pi-flow definitions. It
 covers the file format, every node type, edge routing, the step contract the
 model sees, and how runs behave at runtime. For the on-disk run format, see
 [run-bundles.md](run-bundles.md).
@@ -17,11 +17,11 @@ Files are discovered by suffix (`.workflow.ts`, `.workflow.js`, `.workflow.mts`,
 The workflow's command name is the file stem, so `.pi/workflows/triage.workflow.ts`
 runs as `/workflow triage`. A direct path also works: `/workflow ./somewhere/x.workflow.ts`.
 Files are loaded with [jiti](https://github.com/unjs/jiti), so plain TypeScript
-works without a build step, and `import ... from "pi-workflows"` resolves to
+works without a build step, and `import ... from "pi-flow"` resolves to
 the engine that loaded the file.
 
 ```typescript
-import { agent, compute, defineWorkflow } from "pi-workflows";
+import { agent, compute, defineWorkflow } from "pi-flow";
 
 export default defineWorkflow({
   name: "example",
@@ -44,7 +44,7 @@ Top-level fields:
 
 | Field                | Type                   | Notes                                                                                                                                                                                                              |
 | -------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `name`               | `string`               | Required. Used in run ids and the step contract. `cancel`, `list`, `pause`, and `resume` are reserved for `/workflow` subcommands.                                                                                 |
+| `name`               | `string`               | Required. Used in run ids and the step contract. `cancel`, `list`, `pause`, `resume`, and `runs` are reserved for `/workflow` subcommands.                                                                         |
 | `title`              | `string` or function   | Optional run title, resolved once at start from `{ input, workflowName }`. Async resolution is bounded (30s) and cancellable.                                                                                      |
 | `presentationPrompt` | `string` or function   | Optional instructions for a normal assistant response after the run. A function receives `{ state, finalOutput, signal }` and may return a prompt or `undefined`. See [Result presentation](#result-presentation). |
 | `startAt`            | `string`               | Required. Id of the first node.                                                                                                                                                                                    |
@@ -73,6 +73,13 @@ type WorkflowNodeContext = {
 `outputs` only contains nodes that finished with outcome `ok`. When a node runs
 more than once (a loop), the latest result wins. A failed retry removes the
 node's earlier output from `outputs`.
+
+Every value crossing the engine boundary — the run input, every node output,
+and every accepted step output — must survive a JSON round-trip
+(`JSON.parse(JSON.stringify(x))` deep-equality), or the node fails. Use plain
+JSON values only: no `Date`, `Map`, `Set`, class instances, `NaN`/`Infinity`,
+or `undefined` object properties. A node that returns `undefined` is
+normalized to `null`.
 
 Long-running compute, action, and checkpoint callbacks should observe
 `context.signal` (pass it to `fetch`/`spawn`, or check `signal.aborted` between
@@ -130,27 +137,34 @@ shell({
     command: "git",
     args: ["status", "--porcelain"],
     cwd: "/path/to/repo",
+    env: { GIT_PAGER: "cat" },
     timeoutMs: 10_000,
-    allowNonZeroExit: false,
   }),
   parse: (result) => ({ dirty: result.stdout.trim().length > 0 }),
 });
 ```
 
-Without `parse`, the node output is the full `ShellActionResult` (`stdout`,
-`stderr`, `exitCode`, `signal`, `durationMs`). A non-zero exit fails the node
-unless `allowNonZeroExit` is set. Captured stdout and stderr are each capped
-(default 1,000,000 characters, configurable with `maxOutputChars`) so verbose
-commands cannot exhaust memory. Both action forms record a receipt (command,
-exit code, duration) in the step record for auditability, including when the
-command fails.
+| `exec` field       | Type                     | Default                                                             |
+| ------------------ | ------------------------ | ------------------------------------------------------------------- |
+| `command`          | `string`                 | Required.                                                           |
+| `args`             | `string[]`               | `[]`                                                                |
+| `cwd`              | `string`                 | `process.cwd()`                                                     |
+| `env`              | `Record<string, string>` | Merged over `process.env`.                                          |
+| `stdin`            | `string`                 | None.                                                               |
+| `shell`            | `boolean \| string`      | `false`                                                             |
+| `allowNonZeroExit` | `boolean`                | `false`; a non-zero exit or a kill signal otherwise fails the node. |
+| `timeoutMs`        | `number`                 | None; the node-level `timeoutMs` still applies.                     |
+| `maxOutputChars`   | `number`                 | `1_000_000`, per stream, so verbose commands cannot exhaust memory. |
+
+Without `parse`, the node output is the full `ShellActionResult` (`command`,
+`args`, `cwd`, `stdout`, `stderr`, `exitCode`, `signal`, `durationMs`). Both
+action forms record a receipt (command, exit code, duration) in the step
+record for auditability, including when the command fails.
 
 ### checkpoint
 
-Ends the run in a `waiting` state for human review. Runs after a checkpoint do
-not resume automatically; the checkpoint output is the run's final output.
-Because nothing resumes past a checkpoint, graph validation rejects outgoing
-edges from checkpoint nodes.
+Records a `waiting` state for human review. What happens next depends on
+whether the checkpoint declares an outgoing edge.
 
 ```typescript
 checkpoint({
@@ -158,6 +172,54 @@ checkpoint({
   run: ({ outputs }) => outputs.reconcile, // optional; default output is { summary }
 });
 ```
+
+**No outgoing edge — terminal.** The run ends as `waiting` and the checkpoint
+output is the run's final output. This is the default and the behavior a bare
+`checkpoint({})` at the end of a graph has always had.
+
+**An outgoing edge — resumable.** The run parks: status is `waiting`,
+`waitingOn` names the checkpoint, and the run loop holds. `/workflow resume`
+continues it through that edge, `/workflow cancel` stops it. The next node
+reads the checkpoint's output from `outputs.<checkpointId>`, and a `switch`
+edge routes on the checkpoint's own output, so a human decision can pick the
+branch:
+
+```typescript
+defineWorkflow({
+  name: "review-then-publish",
+  startAt: "draft",
+  nodes: {
+    draft: agent({ prompt: () => "Draft the post", expectedOutput: `{ "post": "text" }` }),
+    review: checkpoint({ run: ({ outputs }) => ({ decision: "approve", draft: outputs.draft }) }),
+    publish: compute({ run: ({ outputs }) => ({ published: outputs.review }) }),
+    revise: agent({ prompt: () => "Revise the draft", expectedOutput: `{ "post": "text" }` }),
+  },
+  edges: [
+    { from: "draft", to: "review" },
+    {
+      from: "review",
+      switch: { on: "$.decision", cases: { approve: "publish", reject: "revise" } },
+    },
+  ],
+});
+```
+
+Four things are worth knowing about a resumable park:
+
+- **Resume is in-session only.** The hold lives in the engine instance, so
+  quitting pi abandons the run. Its bundle stays `waiting` with no `finishedAt`,
+  which readers should treat as abandoned rather than finished.
+- **No presentation turn fires at the park.** `presentationPrompt` still runs
+  for terminal checkpoints and at real completion; a resumable park emits a
+  notification naming both commands instead.
+- **`maxSteps` is a whole-run budget** and spans the park, so a resumed run
+  keeps counting from where it stopped rather than restarting its budget.
+- **A malformed `switch` edge out of a checkpoint fails the run** instead of
+  parking a run that could never route anywhere, because the next node is
+  resolved before the park is entered.
+
+A checkpoint may still declare only one outgoing edge; the usual
+multiple-outgoing-edges rule applies to it like any other node.
 
 ### decision
 
@@ -172,6 +234,7 @@ const choices = ["y", "n"] as const;
 decision({
   choices,
   question: ({ outputs }) => `Same as proposed? ${JSON.stringify(outputs.propose)}`,
+  field: "route", // optional; default "route", must match /^[A-Za-z_][A-Za-z0-9_]*$/
 });
 ```
 
@@ -182,6 +245,12 @@ a missing case a compile-time error:
 decisionEdge({ from: "compare", choices, cases: { y: "implement", n: "reconcile" } });
 ```
 
+`decision` accepts the other `agent` options (`timeoutMs`, `statusDetail`) but
+owns `prompt`, `expectedOutput`, and `validate`. Pass the same `field` to both
+`decision` and `decisionEdge`, or the edge reads the wrong path. Validation
+only guarantees that the submitted object carries an allowed value in that
+field; the `reason` the prompt asks for is not enforced.
+
 ## Edges and routing
 
 Each node has at most one outgoing edge. A plain edge is unconditional:
@@ -190,7 +259,8 @@ Each node has at most one outgoing edge. A plain edge is unconditional:
 { from: "a", to: "b" }
 ```
 
-A `switch` edge routes on a JSON path evaluated against the node's result:
+A `switch` edge routes on a JSON path evaluated against the node's output (or
+its result record, with `$result.`):
 
 ```typescript
 { from: "review", switch: { on: "$.route", cases: { clean: "done", issues_found: "fix" } } }
@@ -203,25 +273,22 @@ Path roots:
   use, with values `ok`, `failed`, `timed_out`, or `cancelled`, which lets a
   workflow route failures to a recovery node instead of failing the run.
 
+`defineWorkflow` rejects a `switch.on` that does not start with one of these
+prefixes, and rejects an empty `cases` map. The resolved value must be a
+scalar (string, number, or boolean); routing on an object or array fails the
+run.
+
 A missing case for the resolved value fails the run with a routing error. A
 node with no outgoing edge (or no matching failure route) ends the run:
 `completed` on success, `failed`/`timed_out`/`cancelled` otherwise.
 
 ## The step contract
 
-Every `agent` prompt ends with a step contract block naming the workflow, the
-step id, the attempt id, and the expected output shape:
-
-```
----
-Workflow step contract (workflow: autoimplement, step: review, attempt: 6f9d…)
-
-Complete this step by calling the `workflow` tool exactly once with:
-{"step": "review", "attempt": "6f9d…", "output": <your result>}
-Expected output: { "route": "clean" | "issues_found", "reason": "short justification" }
-The step is complete only after the workflow tool accepts the output.
-If the tool reports a validation error, correct the output and call it again.
-```
+The engine appends a contract block to every `agent` prompt naming the
+workflow, the step id, and the attempt id, quoting `expectedOutput` verbatim
+(default: `a JSON object with your result`), and instructing the model to call
+the `workflow` tool exactly once with `{"step", "attempt", "output"}`.
+`expectedOutput` is the only part of it a workflow controls.
 
 The `workflow` tool takes `{ step, attempt, output }`. Submissions are
 rejected (with a reason the model sees) when no step is pending, the step id
@@ -247,23 +314,19 @@ export default defineWorkflow({
 });
 ```
 
-After the final run state has been persisted, the Pi extension sends the
-presentation instructions and bounded final result to the model as a hidden
-follow-up message. The next visible message is a normal assistant response.
-Returning `undefined`, returning an empty string, or omitting
-`presentationPrompt` produces no follow-up. Cancelled runs are never
-presented. Async prompt builders have 30 seconds to finish and receive an
-`AbortSignal` that fires on timeout, session shutdown, or when a new workflow
-or normal user turn starts; stale presentations are discarded. Once a presentation message has
-been queued, another workflow cannot start until that assistant response
-settles, so results cannot interleave.
-
-Presentation is outside the workflow graph: it cannot route to another node,
-change the run status, or alter the run bundle. If prompt generation or message
-delivery fails, the extension reports a warning and leaves the finished run
-unchanged. Opting in adds one hidden custom message and one assistant response
-to the normal Pi session; it adds no other persistent data and uses no Pi
-internals.
+- Resolved after the final state is persisted, then delivered as one hidden
+  message carrying the instructions and a bounded final result, answered by
+  one normal assistant response.
+- Returning `undefined`, returning an empty string, or omitting the field
+  produces no follow-up. Cancelled runs are never presented.
+- Async builders have 30 seconds and receive an `AbortSignal` that fires on
+  timeout, session shutdown, or when a new workflow or user turn starts; stale
+  presentations are discarded.
+- Another workflow cannot start until a queued presentation settles, so
+  results cannot interleave.
+- Presentation is outside the graph: it cannot route to another node, change
+  the run status, or alter the run bundle. A failure to build the prompt or
+  deliver the message surfaces as a warning and leaves the run unchanged.
 
 ## Runtime behavior
 
@@ -290,22 +353,29 @@ possible. Defaults worth knowing:
 - Agent nudges: if the model ends its turn without submitting the pending
   step, it gets a reminder, twice by default, then the step fails.
 
-## Using the engine outside pi
+## Picking and browsing runs in pi
 
-The engine is pi-agnostic. `WorkflowEngine` takes any `AgentStepExecutor`, so
-tests (and other hosts) can script agent steps:
+`/workflow` (or `/workflow list`) opens a native pi overlay listing every
+discovered workflow with its `project` or `global` source. Choosing one opens
+pi's input dialog for an optional task; enter with text starts the run with
+`{ task }`, enter on an empty field starts it with `{}`, and escape aborts
+without starting anything.
 
-```typescript
-import { WorkflowEngine, type AgentStepExecutor } from "pi-workflows";
+`/workflow runs` opens the in-pi run browser: an overlay list of run bundles
+newest first, feeding a live detail view with the same header, graph, step
+timeline and inspector the standalone viewer shows. The detail view re-reads
+its bundle once a second, so a running workflow animates in place.
 
-const executor: AgentStepExecutor = {
-  async runAgentStep(request) {
-    const accepted = await request.accept({ answer: "42" });
-    if (!accepted.ok) throw new Error(accepted.error);
-    return { output: accepted.value };
-  },
-};
+| View       | Keys                                                                       |
+| ---------- | -------------------------------------------------------------------------- |
+| Both lists | `↑`/`↓` move (wrapping), `enter` select, `esc` cancel                      |
+| Run detail | `↑`/`↓` scroll, `PgUp`/`PgDn` page, `←`/`→` scrub replay steps, `esc` back |
 
-const engine = new WorkflowEngine({ executor, outputRoot: "/tmp/runs" });
-const { state } = await engine.run(workflow, { task: "..." });
-```
+Scrubbing left from the live position selects the last step; stepping right
+past the final step snaps back to live so the view resumes following new
+steps. Escape from the detail view returns to the run list, not the prompt.
+
+Overlays are terminal-only and degrade by mode. In RPC mode `/workflow` uses
+pi's native select dialog and `/workflow runs` notifies a summary of the five
+most recent run ids. In print and JSON modes `/workflow` keeps the plain
+notification listing. Nothing is a dead end.

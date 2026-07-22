@@ -53,7 +53,7 @@ describe("workflowRunsBaseDir", () => {
 
 describe("WorkflowRunStore", () => {
   it("initializes and updates a run bundle", async () => {
-    const outputRoot = await makeTempDir("pi-workflows-store");
+    const outputRoot = await makeTempDir("pi-flow-store");
     const store = new WorkflowRunStore(outputRoot);
     const state = makeState();
 
@@ -78,7 +78,7 @@ describe("WorkflowRunStore", () => {
   });
 
   it("assigns monotonic trace sequence numbers", async () => {
-    const outputRoot = await makeTempDir("pi-workflows-store");
+    const outputRoot = await makeTempDir("pi-flow-store");
     const store = new WorkflowRunStore(outputRoot);
     const state = makeState();
     const runDir = await store.initializeRunBundle(workflow, state);
@@ -100,7 +100,7 @@ describe("WorkflowRunStore", () => {
 
 describe("listRunBundles", () => {
   it("lists bundles most recent first and skips junk", async () => {
-    const outputRoot = await makeTempDir("pi-workflows-list");
+    const outputRoot = await makeTempDir("pi-flow-list");
     const store = new WorkflowRunStore(outputRoot);
     const older = makeState({ startedAt: "2026-01-01T00:00:00.000Z" });
     const newer = makeState({ startedAt: "2026-06-01T00:00:00.000Z" });

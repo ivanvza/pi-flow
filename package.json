@@ -1,5 +1,5 @@
 {
-  "name": "pi-workflows",
+  "name": "pi-flow",
   "version": "0.1.0",
   "private": true,
   "description": "Workflow engine, JSON control-flow tool, and live terminal viewer for the pi coding agent",
@@ -9,16 +9,16 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/osolmaz/pi-workflows.git"
+    "url": "git+https://github.com/ivanvza/pi-flow.git"
   },
   "bin": {
-    "pi-workflows": "dist/viewer/cli.js"
+    "pi-flow": "dist/viewer/cli.js"
   },
   "files": [
     "dist",
     "src",
-    "examples",
     "docs",
+    "skills",
     "README.md",
     "LICENSE"
   ],
@@ -38,7 +38,7 @@
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run build && npm run test:coverage",
     "format": "oxfmt --write",
     "format:check": "oxfmt --check",
-    "lint": "oxlint --deny-warnings src test examples",
+    "lint": "oxlint --deny-warnings src test",
     "prepare": "node scripts/prepare.mjs",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
@@ -50,6 +50,7 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.80.10",
+    "@earendil-works/pi-tui": "^0.80.10",
     "@types/node": "^26.1.1",
     "@vitest/coverage-istanbul": "^4.1.10",
     "oxfmt": "^0.59.0",
@@ -60,6 +61,8 @@
     "vitest": "^4.1.10"
   },
   "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
   "engines": {
@@ -68,6 +71,9 @@
   "pi": {
     "extensions": [
       "./src/extension/index.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   }
 }

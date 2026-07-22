@@ -1,6 +1,6 @@
-# pi-workflows
+# pi-flow
 
-pi-workflows is a workflow extension for the [pi coding agent](https://pi.dev).
+pi-flow is a workflow extension for the [pi coding agent](https://pi.dev).
 It lets you define multi-step agent workflows as TypeScript graphs, trigger
 them at any point in a pi conversation with `/workflow`, and watch them run
 live in a standalone terminal viewer.
@@ -14,16 +14,16 @@ structured, validated output to route on.
 ## Install
 
 ```bash
-pi install git:github.com/osolmaz/pi-workflows
+pi install git:github.com/ivanvza/pi-flow
 ```
 
 Or try it without installing:
 
 ```bash
-pi -e git:github.com/osolmaz/pi-workflows
+pi -e git:github.com/ivanvza/pi-flow
 ```
 
-The `pi-workflows` viewer binary is part of the same package. To get it on
+The `pi-flow` viewer binary is part of the same package. To get it on
 your PATH, clone the repo and run `npm install && npm run build && npm link`,
 or run it in place with `npx tsx src/viewer/cli.ts`.
 
@@ -34,7 +34,7 @@ Put a workflow file in `.pi/workflows/` (project) or `~/.pi/agent/workflows/`
 
 ```typescript
 // .pi/workflows/echo.workflow.ts
-import { agent, defineWorkflow } from "pi-workflows";
+import { agent, defineWorkflow } from "pi-flow";
 
 export default defineWorkflow({
   name: "echo",
@@ -56,46 +56,48 @@ Then, from any pi conversation:
 /workflow echo summarize this repository
 ```
 
-`/workflow` with no arguments lists discovered workflows. `/workflow pause`
-lets the current step finish and then holds the run before the next node —
-useful when you want to interject in the conversation mid-workflow —
-and `/workflow resume` continues it. Pressing escape to interrupt a turn
-pauses the workflow automatically, so the run never nudges the model while
-you have taken the conversation back; `/workflow resume` re-delivers the
-pending step prompt. `/workflow cancel` stops the active run; if the last run
-already ended (for example parked at a checkpoint), it clears the leftover
-widget instead. Trailing text becomes `{ task: "..." }`; pass arbitrary input
-with `--input-json {"key": "value"}`. The names `cancel`, `list`, `pause`,
-and `resume` are reserved and rejected as workflow names.
+| Command                             | Effect                                                                  |
+| ----------------------------------- | ----------------------------------------------------------------------- |
+| `/workflow`                         | Arrow-key picker of discovered workflows, then an optional task prompt. |
+| `/workflow runs`                    | Browse run bundles in pi: pick a run, then a live detail view.          |
+| `/workflow <name-or-path> [task]`   | Run it. Trailing text becomes `{ task: "..." }`, no text becomes `{}`.  |
+| `/workflow <name> --input-json {…}` | Run with arbitrary JSON input.                                          |
+| `/workflow pause`                   | Let the current step finish, then hold the run before the next node.    |
+| `/workflow resume`                  | Continue, re-delivering the pending step prompt.                        |
+| `/workflow cancel`                  | Abort the active run, or clear a leftover widget when no run is live.   |
+
+Pressing escape to interrupt a turn pauses the workflow automatically, so the
+run never nudges the model while you have taken the conversation back. The
+names `cancel`, `list`, `pause`, `resume`, and `runs` are rejected as workflow
+names.
 
 While a run is on screen, the footer status bar shows a compact
 `wf <name> [status] <node>` indicator alongside the widget.
 
-`presentationPrompt` is optional. When present, pi-workflows uses it after the
+`presentationPrompt` is optional. When present, pi-flow uses it after the
 structured run ends to request one normal, human-readable assistant response.
 Workflows without it remain silent after their final structured output, which
 keeps shell-only and machine-consumed workflows model-free.
 
-Because the workflow runs in your current conversation, you can have a long
-discussion first and then trigger a workflow that builds on it. The
-`elegant-solution` example does exactly that. It asks the model for the most
-elegant long-term production-ready solution to the problem you discussed, then
-for the holy grail, then whether the two are the same (y/n). On `y` it routes
-straight into implementation, and on `n` it asks the model to reconcile the
-gap and pauses at a checkpoint for you to decide. In either case, its
-`presentationPrompt` turns the final structured result into a plain assistant
-response.
+Because the workflow runs in your current conversation, you can discuss a
+problem at length and then trigger a workflow that builds on it — see the
+`elegant-solution` example.
 
 ## Watching a run
+
+`/workflow runs` browses runs from inside pi and is the quickest way to check
+on one mid-session. The standalone `pi-flow view` binary remains for a
+second terminal, after pi exits, or in CI, and does not require pi to be
+installed.
 
 Runs persist to `~/.pi/agent/workflows/runs/` as they execute. The viewer
 tails that directory and re-renders on every state change:
 
 ```bash
-pi-workflows view          # interactive picker, live updates
-pi-workflows view <runId>  # jump straight to one run
-pi-workflows runs          # plain list of recent runs
-pi-workflows view --once   # print a snapshot and exit (good for scripts)
+pi-flow view          # interactive picker, live updates
+pi-flow view <runId>  # jump straight to one run
+pi-flow runs          # plain list of recent runs
+pi-flow view --once   # print a snapshot and exit (good for scripts)
 ```
 
 The run detail view draws the workflow as a boxed graph, like the acpx replay
@@ -104,7 +106,8 @@ carry their case labels, the taken path is highlighted, and loops route
 through a gutter on the right back into their target from above. `←/→` scrubs
 backwards and forwards through the recorded steps and re-derives every node's
 status as of that step, with the selected step's full output shown below;
-scrubbing to the end snaps back to following the run live.
+scrubbing to the end snaps back to following the run live. Escape goes back to
+the run list rather than quitting.
 
 ```
               │ ┌──────────────────┐
@@ -135,41 +138,33 @@ to following the active node whenever the workflow advances a step.
 A workflow is a graph of named nodes with exactly one entry point. Each node
 finishes with a JSON output, and edges decide what runs next.
 
-An `agent` node sends a prompt into the pi conversation and waits for the
-model to submit its output through the `workflow` tool. A `compute` node runs
-a pure TypeScript function. An `action` node performs a side effect, either a
-TypeScript function (`action({ run })`) or a runtime-owned shell command
-(`shell({ exec, parse })`). A `checkpoint` node ends the run in a `waiting`
-state so a human can pick it up. On top of `agent`, the `decision` helper asks
-the model to pick from a fixed set of choices and validates the answer, and
-`decisionEdge` routes on the result with compile-time case checking.
+| Helper                                             | What it does                                                                                      |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `agent({ prompt, expectedOutput })`                | Prompts the model in the live conversation; it submits via the `workflow` tool.                   |
+| `compute({ run })`                                 | Pure local TypeScript function.                                                                   |
+| `action({ run })`                                  | Side-effecting local TypeScript function.                                                         |
+| `shell({ exec, parse })`                           | Runtime-owned shell command.                                                                      |
+| `checkpoint({ summary })`                          | Parks the run `waiting` for a human; with an outgoing edge, `/workflow resume` continues past it. |
+| `decision({ choices, question })` + `decisionEdge` | Constrained choice with compile-time case checking.                                               |
 
 See [docs/workflows.md](docs/workflows.md) for the full authoring reference
 and [docs/run-bundles.md](docs/run-bundles.md) for the on-disk run format.
 
+## Bundled skill
+
+Installing the package also installs the `pi-flow-authoring`
+[skill](skills/pi-flow-authoring/SKILL.md), so asking pi to build or
+change a workflow gets it the authoring rules on demand without you pointing
+at the docs. Skills load from the package manifest, so a directory-shaped
+source is required: `pi -e .` picks them up, `pi -e ./src/extension/index.ts`
+loads the extension alone.
+
 ## Examples
 
-The [examples/workflows/](examples/workflows/) directory mirrors the acpx
-example set. Copy any of them into `.pi/workflows/` to use them:
-
-- `echo` is the smallest possible workflow, one agent step.
-- `branch` classifies a task with a `decision` and routes to either a
-  continue lane or a clarification checkpoint.
-- `shell` runs a runtime-owned shell command and parses its output, with no
-  agent step at all.
-- `two-turn` chains three agent steps that build on each other's outputs in
-  the same conversation.
-- `elegant-solution` is the mid-conversation trigger described above.
-- `autoimplement` runs an implement, verify, review loop where the review
-  decision routes `issues_found` back to a fix step until it comes back
-  `clean`, bounded by `maxSteps`.
-- `autoresearch` runs an iterative feature-search loop in the style of
-  [karpathy/autoresearch](https://github.com/karpathy/autoresearch): setup
-  creates a frozen evaluation harness, one editable feature file, and a
-  journal; each loop iteration runs one generation of experiments and
-  journals every result; an assess decision keeps looping until a kept
-  result plateaus or a diverse generation all fails, then conclusions are
-  written before the winner is promoted out of the loop directory.
+Short, copyable snippets — a minimal step, a decision branch, a review loop
+that routes back on `revise`, and a shell-only step — live in the
+[`pi-flow-authoring` skill](skills/pi-flow-authoring/SKILL.md), next
+to the full authoring reference in [docs/workflows.md](docs/workflows.md).
 
 ## License
 

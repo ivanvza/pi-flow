@@ -21,7 +21,7 @@ function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
 
 describe("watchRunsDir", () => {
   it("fires on file changes and debounces bursts", async () => {
-    const dir = await makeTempDir("pi-workflows-watch");
+    const dir = await makeTempDir("pi-flow-watch");
     let changes = 0;
     const unsubscribe = watchRunsDir(
       dir,
@@ -43,7 +43,7 @@ describe("watchRunsDir", () => {
   it("falls back to polling when the directory cannot be watched", async () => {
     let changes = 0;
     const unsubscribe = watchRunsDir(
-      "/nonexistent/pi-workflows",
+      "/nonexistent/pi-flow",
       () => {
         changes += 1;
       },
@@ -57,7 +57,7 @@ describe("watchRunsDir", () => {
   });
 
   it("stops firing after unsubscribe", async () => {
-    const dir = await makeTempDir("pi-workflows-watch");
+    const dir = await makeTempDir("pi-flow-watch");
     let changes = 0;
     const unsubscribe = watchRunsDir(
       dir,

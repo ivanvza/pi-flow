@@ -26,10 +26,13 @@ type SentMessage = {
 type FakeContext = {
   cwd: string;
   hasUI: boolean;
+  mode: string;
   ui: {
     notify: (message: string, type?: string) => void;
     setWidget: (key: string, lines: string[] | undefined) => void;
     setStatus: (key: string, text: string | undefined) => void;
+    select: (title: string, options: string[]) => Promise<string | undefined>;
+    input: (title: string, placeholder?: string) => Promise<string | undefined>;
   };
 };
 
@@ -51,13 +54,27 @@ function makeHarness(options: {
   let command: RegisteredCommand | null = null;
   let tool: RegisteredTool | null = null;
 
+  const selectOptions: string[] = [];
+  // Dialog answers for the rpc path; overlays never run under the harness.
+  const answers: { select: string | undefined; input: string | undefined } = {
+    select: undefined,
+    input: undefined,
+  };
+
   const ctx: FakeContext = {
     cwd: options.cwd,
+    // "print" routes /workflow to the notify listing, not a dialog.
+    mode: "print",
     hasUI: true,
     ui: {
       notify: (message) => notifications.push(message),
       setWidget: (_key, lines) => widgets.push(lines),
       setStatus: (_key, text) => statuses.push(text),
+      select: (_title, options) => {
+        selectOptions.push(...options);
+        return Promise.resolve(answers.select);
+      },
+      input: () => Promise.resolve(answers.input),
     },
   };
 
@@ -91,6 +108,8 @@ function makeHarness(options: {
   }
   return {
     ctx,
+    answers,
+    selectOptions,
     notifications,
     widgets,
     statuses,
@@ -111,7 +130,7 @@ async function writeEchoWorkflow(cwd: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(
     path.join(dir, "mini.workflow.ts"),
-    `import { agent, defineWorkflow } from "pi-workflows";
+    `import { agent, defineWorkflow } from "pi-flow";
 
 export default defineWorkflow({
   name: "mini",
@@ -144,10 +163,10 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
   }
 }
 
-describe("pi-workflows extension", () => {
+describe("pi-flow extension", () => {
   it("runs a workflow end to end through the command and tool", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext");
-    const runsDir = await makeTempDir("pi-workflows-ext-runs");
+    const cwd = await makeTempDir("pi-flow-ext");
+    const runsDir = await makeTempDir("pi-flow-ext-runs");
     vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
     try {
       await writeEchoWorkflow(cwd);
@@ -181,15 +200,15 @@ describe("pi-workflows extension", () => {
   });
 
   it("queues an opted-in result presentation after completion", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext");
-    const runsDir = await makeTempDir("pi-workflows-ext-runs");
+    const cwd = await makeTempDir("pi-flow-ext");
+    const runsDir = await makeTempDir("pi-flow-ext-runs");
     vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
     try {
       const dir = path.join(cwd, ".pi", "workflows");
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "present.workflow.ts"),
-        `import { agent, defineWorkflow } from "pi-workflows";
+        `import { agent, defineWorkflow } from "pi-flow";
 
 export default defineWorkflow({
   name: "present",
@@ -217,7 +236,7 @@ export default defineWorkflow({
       await waitFor(() => harness.sentMessages.length === 1);
 
       const sent = harness.sentMessages[0];
-      expect(sent?.message.customType).toBe("pi-workflows-presentation");
+      expect(sent?.message.customType).toBe("pi-flow-presentation");
       expect(sent?.message.display).toBe(false);
       expect(sent?.message.content).toContain("Explain the answer plainly.");
       expect(sent?.message.content).toContain('"answer": "forty-two"');
@@ -226,7 +245,7 @@ export default defineWorkflow({
 
       await fs.writeFile(
         path.join(dir, "next.workflow.ts"),
-        `import { compute, defineWorkflow } from "pi-workflows";
+        `import { compute, defineWorkflow } from "pi-flow";
 export default defineWorkflow({
   name: "next",
   startAt: "finish",
@@ -250,15 +269,15 @@ export default defineWorkflow({
   });
 
   it("resolves an async presentation prompt for a waiting checkpoint", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext");
-    const runsDir = await makeTempDir("pi-workflows-ext-runs");
+    const cwd = await makeTempDir("pi-flow-ext");
+    const runsDir = await makeTempDir("pi-flow-ext-runs");
     vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
     try {
       const dir = path.join(cwd, ".pi", "workflows");
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "present-waiting.workflow.ts"),
-        `import { checkpoint, defineWorkflow } from "pi-workflows";
+        `import { checkpoint, defineWorkflow } from "pi-flow";
 
 export default defineWorkflow({
   name: "present-waiting",
@@ -290,15 +309,15 @@ export default defineWorkflow({
   });
 
   it("discards a delayed presentation when another workflow starts", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext");
-    const runsDir = await makeTempDir("pi-workflows-ext-runs");
+    const cwd = await makeTempDir("pi-flow-ext");
+    const runsDir = await makeTempDir("pi-flow-ext-runs");
     vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
     try {
       const dir = path.join(cwd, ".pi", "workflows");
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "delayed.workflow.ts"),
-        `import { compute, defineWorkflow } from "pi-workflows";
+        `import { compute, defineWorkflow } from "pi-flow";
 
 export default defineWorkflow({
   name: "delayed",
@@ -315,7 +334,7 @@ export default defineWorkflow({
       );
       await fs.writeFile(
         path.join(dir, "newer.workflow.ts"),
-        `import { compute, defineWorkflow } from "pi-workflows";
+        `import { compute, defineWorkflow } from "pi-flow";
 
 export default defineWorkflow({
   name: "newer",
@@ -346,15 +365,15 @@ export default defineWorkflow({
   });
 
   it("discards a delayed presentation when a normal user turn starts", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext");
-    const runsDir = await makeTempDir("pi-workflows-ext-runs");
+    const cwd = await makeTempDir("pi-flow-ext");
+    const runsDir = await makeTempDir("pi-flow-ext-runs");
     vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
     try {
       const dir = path.join(cwd, ".pi", "workflows");
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "delayed-turn.workflow.ts"),
-        `import { compute, defineWorkflow } from "pi-workflows";
+        `import { compute, defineWorkflow } from "pi-flow";
 
 export default defineWorkflow({
   name: "delayed-turn",
@@ -386,15 +405,15 @@ export default defineWorkflow({
   });
 
   it("isolates presentation failures from the finished run", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext");
-    const runsDir = await makeTempDir("pi-workflows-ext-runs");
+    const cwd = await makeTempDir("pi-flow-ext");
+    const runsDir = await makeTempDir("pi-flow-ext-runs");
     vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
     try {
       const dir = path.join(cwd, ".pi", "workflows");
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "bad-presentation.workflow.ts"),
-        `import { compute, defineWorkflow } from "pi-workflows";
+        `import { compute, defineWorkflow } from "pi-flow";
 
 export default defineWorkflow({
   name: "bad-presentation",
@@ -421,15 +440,15 @@ export default defineWorkflow({
   });
 
   it("does not present cancelled runs", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext");
-    const runsDir = await makeTempDir("pi-workflows-ext-runs");
+    const cwd = await makeTempDir("pi-flow-ext");
+    const runsDir = await makeTempDir("pi-flow-ext-runs");
     vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
     try {
       const dir = path.join(cwd, ".pi", "workflows");
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "cancel-presentation.workflow.ts"),
-        `import { agent, defineWorkflow } from "pi-workflows";
+        `import { agent, defineWorkflow } from "pi-flow";
 
 export default defineWorkflow({
   name: "cancel-presentation",
@@ -456,7 +475,7 @@ export default defineWorkflow({
   });
 
   it("lists workflows, rejects bad input, and reports missing cancels", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext");
+    const cwd = await makeTempDir("pi-flow-ext");
     await writeEchoWorkflow(cwd);
     const harness = makeHarness({ cwd, respond: () => {} });
 
@@ -473,8 +492,41 @@ export default defineWorkflow({
     expect(harness.notifications.at(-1)).toContain("Could not start workflow");
   });
 
+  it("picks and runs a workflow through the rpc select dialog", async () => {
+    const cwd = await makeTempDir("pi-flow-ext");
+    const runsDir = await makeTempDir("pi-flow-ext-runs");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
+    try {
+      await writeEchoWorkflow(cwd);
+      const harness = makeHarness({ cwd, respond: () => {} });
+      harness.ctx.mode = "rpc";
+      harness.answers.select = "mini";
+      harness.answers.input = "do it";
+
+      await harness.command.handler("", harness.ctx);
+
+      expect(harness.selectOptions).toContain("mini");
+      await waitFor(() => harness.notifications.some((note) => note.includes("mini started")));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("summarises recent runs outside tui mode", async () => {
+    const cwd = await makeTempDir("pi-flow-ext");
+    const runsDir = await makeTempDir("pi-flow-ext-runs");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
+    try {
+      const harness = makeHarness({ cwd, respond: () => {} });
+      await harness.command.handler("runs", harness.ctx);
+      expect(harness.notifications.at(-1)).toContain("No workflow runs in");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("warns when no workflows are discoverable", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext-empty");
+    const cwd = await makeTempDir("pi-flow-ext-empty");
     // The real home directory may have global workflows installed; point
     // discovery at an empty home so this test stays hermetic.
     const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(cwd);
@@ -488,15 +540,15 @@ export default defineWorkflow({
   });
 
   it("keeps the widget up when a run parks at a checkpoint", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext");
-    const runsDir = await makeTempDir("pi-workflows-ext-runs");
+    const cwd = await makeTempDir("pi-flow-ext");
+    const runsDir = await makeTempDir("pi-flow-ext-runs");
     vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
     try {
       const dir = path.join(cwd, ".pi", "workflows");
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "parked.workflow.ts"),
-        `import { checkpoint, defineWorkflow } from "pi-workflows";
+        `import { checkpoint, defineWorkflow } from "pi-flow";
 
 export default defineWorkflow({
   name: "parked",
@@ -513,10 +565,10 @@ export default defineWorkflow({
 
       await harness.command.handler("parked", harness.ctx);
       await waitFor(() =>
-        harness.notifications.some((note) => note.includes("awaiting your decision")),
+        harness.notifications.some((note) => note.includes("ended at checkpoint review")),
       );
       expect(harness.notifications.at(-1)).toContain(
-        "parked at checkpoint review — run ended, awaiting your decision",
+        "Workflow parked ended at checkpoint review — nothing follows it, so there is nothing to resume. /workflow cancel to clear it. (Give the checkpoint an outgoing edge to make it resumable.)",
       );
 
       // The final widget update must still be present, not cleared, and show
@@ -525,6 +577,14 @@ export default defineWorkflow({
       expect(last).toBeDefined();
       expect(last?.join("\n")).toContain("[waiting]");
       expect(last?.join("\n")).toContain("waiting on checkpoint: review");
+
+      // While that widget is up, pause/resume must explain the terminal park
+      // rather than flatly contradicting it with "No workflow is running."
+      for (const sub of ["resume", "pause"]) {
+        await harness.command.handler(sub, harness.ctx);
+        expect(harness.notifications.at(-1)).toContain("ended at checkpoint review");
+        expect(harness.notifications.at(-1)).not.toContain("No workflow is running");
+      }
 
       // With no live run, cancel clears the parked widget instead of
       // claiming nothing exists.
@@ -541,9 +601,112 @@ export default defineWorkflow({
     }
   });
 
+  it("resumes a run parked at a checkpoint that declares an outgoing edge", async () => {
+    const cwd = await makeTempDir("pi-flow-ext");
+    const runsDir = await makeTempDir("pi-flow-ext-runs");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
+    try {
+      const dir = path.join(cwd, ".pi", "workflows");
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, "resumable.workflow.ts"),
+        `import { checkpoint, compute, defineWorkflow } from "pi-flow";
+
+export default defineWorkflow({
+  name: "resumable",
+  startAt: "review",
+  nodes: {
+    review: checkpoint({ summary: "human review", run: () => ({ ok: true }) }),
+    publish: compute({ run: () => ({ published: true }) }),
+  },
+  edges: [{ from: "review", to: "publish" }],
+});
+`,
+        "utf8",
+      );
+      const harness = makeHarness({ cwd, respond: () => {} });
+
+      await harness.command.handler("resumable", harness.ctx);
+      await waitFor(() =>
+        harness.notifications.some((note) => note.includes("parked at checkpoint review")),
+      );
+      expect(harness.notifications.at(-1)).toContain(
+        "parked at checkpoint review — /workflow resume to continue",
+      );
+
+      // A parked run reads as waiting, never paused, even though the engine's
+      // pause flag is what holds it.
+      const parkedWidget = harness.widgets.at(-1)?.join("\n");
+      expect(parkedWidget).toContain("[waiting]");
+      expect(parkedWidget).toContain("waiting on checkpoint: review");
+      expect(parkedWidget).not.toContain("[paused]");
+
+      await harness.command.handler("pause", harness.ctx);
+      expect(harness.notifications.at(-1)).toContain("is parked at checkpoint review");
+
+      await harness.command.handler("resumable", harness.ctx);
+      expect(harness.notifications.at(-1)).toContain(
+        "is parked at checkpoint review. Use /workflow resume",
+      );
+
+      await harness.command.handler("resume", harness.ctx);
+      expect(harness.notifications.at(-1)).toContain("resumed");
+      expect(harness.notifications.every((note) => !note.includes("No workflow is running"))).toBe(
+        true,
+      );
+
+      await waitFor(() => harness.notifications.some((note) => note.includes("completed")));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("cancels a run parked at a resumable checkpoint through the live engine", async () => {
+    const cwd = await makeTempDir("pi-flow-ext");
+    const runsDir = await makeTempDir("pi-flow-ext-runs");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
+    try {
+      const dir = path.join(cwd, ".pi", "workflows");
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, "parkcancel.workflow.ts"),
+        `import { checkpoint, compute, defineWorkflow } from "pi-flow";
+
+export default defineWorkflow({
+  name: "parkcancel",
+  startAt: "review",
+  nodes: {
+    review: checkpoint({ summary: "human review" }),
+    publish: compute({ run: () => ({ published: true }) }),
+  },
+  edges: [{ from: "review", to: "publish" }],
+});
+`,
+        "utf8",
+      );
+      const harness = makeHarness({ cwd, respond: () => {} });
+
+      await harness.command.handler("parkcancel", harness.ctx);
+      await waitFor(() =>
+        harness.notifications.some((note) => note.includes("parked at checkpoint review")),
+      );
+
+      // Branch 1: a live engine really cancels, rather than branch 2 merely
+      // clearing the widget of an already-ended run.
+      await harness.command.handler("cancel", harness.ctx);
+      expect(harness.notifications.at(-1)).toContain("Cancelling workflow parkcancel");
+
+      await waitFor(() =>
+        harness.notifications.some((note) => note.includes("parkcancel cancelled")),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("pauses and resumes a live run via subcommands", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext");
-    const runsDir = await makeTempDir("pi-workflows-ext-runs");
+    const cwd = await makeTempDir("pi-flow-ext");
+    const runsDir = await makeTempDir("pi-flow-ext-runs");
     vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
     try {
       await writeEchoWorkflow(cwd);
@@ -574,8 +737,8 @@ export default defineWorkflow({
   });
 
   it("auto-pauses when the user interrupts the turn and resumes with a reprompt", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext");
-    const runsDir = await makeTempDir("pi-workflows-ext-runs");
+    const cwd = await makeTempDir("pi-flow-ext");
+    const runsDir = await makeTempDir("pi-flow-ext-runs");
     vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
     try {
       await writeEchoWorkflow(cwd);
@@ -614,8 +777,8 @@ export default defineWorkflow({
   });
 
   it("ignores non-aborted turn ends", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext");
-    const runsDir = await makeTempDir("pi-workflows-ext-runs");
+    const cwd = await makeTempDir("pi-flow-ext");
+    const runsDir = await makeTempDir("pi-flow-ext-runs");
     vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
     try {
       await writeEchoWorkflow(cwd);
@@ -636,7 +799,7 @@ export default defineWorkflow({
   });
 
   it("registers scroll shortcuts that no-op without a widget", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext");
+    const cwd = await makeTempDir("pi-flow-ext");
     const harness = makeHarness({ cwd, respond: () => {} });
     expect([...harness.shortcuts.keys()]).toEqual(["shift+up", "shift+down"]);
     // No workflow has run yet, so there is nothing to scroll; must not throw.
@@ -646,7 +809,7 @@ export default defineWorkflow({
   });
 
   it("rejects tool calls outside a workflow", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext");
+    const cwd = await makeTempDir("pi-flow-ext");
     const harness = makeHarness({ cwd, respond: () => {} });
     await expect(
       harness.tool.execute("call-1", { step: "reply", attempt: "a1", output: {} }),
@@ -654,8 +817,8 @@ export default defineWorkflow({
   });
 
   it("cancels a running workflow", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext");
-    const runsDir = await makeTempDir("pi-workflows-ext-runs");
+    const cwd = await makeTempDir("pi-flow-ext");
+    const runsDir = await makeTempDir("pi-flow-ext-runs");
     vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
     try {
       await writeEchoWorkflow(cwd);
@@ -676,7 +839,7 @@ export default defineWorkflow({
   });
 
   it("completes workflow names for the command", async () => {
-    const cwd = await makeTempDir("pi-workflows-ext");
+    const cwd = await makeTempDir("pi-flow-ext");
     await writeEchoWorkflow(cwd);
     const harness = makeHarness({ cwd, respond: () => {} });
     const originalCwd = process.cwd();

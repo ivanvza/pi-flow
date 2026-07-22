@@ -1,6 +1,6 @@
 # Development guide
 
-This document covers the standards for working on pi-workflows itself. For
+This document covers the standards for working on pi-flow itself. For
 authoring workflows, see [workflows.md](workflows.md).
 
 ## Layout and boundaries
@@ -8,7 +8,9 @@ authoring workflows, see [workflows.md](workflows.md).
 ```
 src/workflows/   engine core: definitions, graph, engine, store, loader
 src/extension/   pi integration: /workflow command, workflow tool, widget
+src/render/      shared graph layout, terminal drawing, and the run views (pi-agnostic)
 src/viewer/      standalone TUI viewer over run bundles
+skills/          agent skills shipped with the package (see package.json `pi.skills`)
 ```
 
 The dependency direction is enforced by `slophammer.yml`. `src/workflows`
@@ -26,10 +28,21 @@ replay position into the drawn graph in one of two node styles: `box`
 (single-line nodes). The widget windows the boxed graph around the active
 node to stay inside pi's 10-line widget cap; `shift+↑`/`shift+↓` shortcuts
 (registered through pi's `registerShortcut`) scroll that window manually, and
-the scroll resets to follow mode when the run records a new step. `render.ts`
-in `src/viewer`
+the scroll resets to follow mode when the run records a new step. `run-view.ts`
+in `src/render`
 composes the full detail view (header, graph, step timeline, step inspector)
-and stays pure so tests can assert on rendered lines.
+and stays pure so tests can assert on rendered lines. It is imported by both
+`src/viewer` (the standalone binary) and `src/extension` (the in-pi overlay),
+which is why it must never import pi-tui: the binary ships to users who may
+not have pi installed.
+
+`src/extension/overlay.ts` is the only file with runtime (non-type) imports
+from pi — `SelectList`, `Container`, `Text`, `Key`/`matchesKey` from
+`@earendil-works/pi-tui`, and `DynamicBorder`/`getSelectListTheme` from
+`@earendil-works/pi-coding-agent`. Both packages are therefore declared in
+`peerDependencies` with `"*"`, per pi's bundled-package contract; pi's loader
+aliases those specifiers to its own copies, which also guarantees a single
+pi-tui instance so `Key`/`matchesKey` identity holds across the boundary.
 
 The renderer is built so that overlaps cannot corrupt the drawing: every
 back edge owns exclusive lane rows and an exclusive gutter column, multiple
@@ -39,7 +52,7 @@ anything but a plain horizontal run or empty cells. `test/helpers/graph-verify.t
 enforces this structurally: it re-parses the rendered characters, checks
 every node box is unbroken, and traces every declared edge through the
 actual box-drawing characters from source box to target arrow.
-`test/graph-verify.test.ts` runs that verifier over 60 seeded random
+`test/graph-verify.test.ts` runs that verifier over 200 seeded random
 workflow shapes at every replay position; if a rendering change breaks a
 line, misplaces an arrow, or lets a label damage an edge, those tests fail
 with the offending drawing in the assertion message.
@@ -49,6 +62,28 @@ The extension implements it on top of the live conversation
 (`src/extension/executor.ts`), and tests implement it with a scripted fake
 (`test/helpers.ts`). Anything that would couple the engine to pi belongs on
 the extension side of that seam.
+
+That seam is also how another host embeds the engine. `WorkflowEngine` takes
+any `AgentStepExecutor`:
+
+```typescript
+import { WorkflowEngine, type AgentStepExecutor } from "pi-flow";
+
+const executor: AgentStepExecutor = {
+  async runAgentStep(request) {
+    const accepted = await request.accept({ answer: "42" });
+    if (!accepted.ok) throw new Error(accepted.error);
+    return { output: accepted.value };
+  },
+};
+
+const engine = new WorkflowEngine({ executor, outputRoot: "/tmp/runs" });
+const { state } = await engine.run(workflow, { task: "..." });
+```
+
+`WorkflowEngineOptions` are `executor`, `outputRoot` (default
+`~/.pi/agent/workflows/runs`), `defaultNodeTimeoutMs` (default 15 minutes),
+`maxSteps` (default 100), and `onEvent`.
 
 ## Toolchain
 

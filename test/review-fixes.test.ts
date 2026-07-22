@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { ConversationStepExecutor, type PromptDelivery } from "../src/extension/executor.js";
 import { sanitizeText } from "../src/render/ansi.js";
-import { renderRunDetailLines } from "../src/viewer/render.js";
+import { renderRunDetailLines } from "../src/render/run-view.js";
 import { agent, compute, defineWorkflow, shell } from "../src/workflows/definition.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
 import { validateWorkflowDefinition } from "../src/workflows/graph.js";
@@ -13,7 +13,7 @@ import type { AgentStepRequest } from "../src/workflows/types.js";
 import { ScriptedExecutor, makeTempDir } from "./helpers.js";
 
 async function makeEngine(options: { executor?: ScriptedExecutor } = {}) {
-  const outputRoot = await makeTempDir("pi-workflows-fixes");
+  const outputRoot = await makeTempDir("pi-flow-fixes");
   return new WorkflowEngine({ executor: options.executor ?? new ScriptedExecutor(), outputRoot });
 }
 
@@ -364,7 +364,7 @@ describe("hung validation after the step is cleared", () => {
 });
 
 describe("checkpoint edges", () => {
-  it("rejects outgoing edges from checkpoint nodes", async () => {
+  it("accepts a single outgoing edge from a checkpoint and reaches its target", async () => {
     const { checkpoint } = await import("../src/workflows/definition.js");
     const workflow = defineWorkflow({
       name: "checkpoint-edge",
@@ -372,8 +372,26 @@ describe("checkpoint edges", () => {
       nodes: { pause: checkpoint({}), after: compute({ run: () => 1 }) },
       edges: [{ from: "pause", to: "after" }],
     });
+    expect(() => validateWorkflowDefinition(workflow)).not.toThrow();
+  });
+
+  it("still rejects multiple outgoing edges from a checkpoint", async () => {
+    const { checkpoint } = await import("../src/workflows/definition.js");
+    const workflow = defineWorkflow({
+      name: "checkpoint-fork",
+      startAt: "pause",
+      nodes: {
+        pause: checkpoint({}),
+        after: compute({ run: () => 1 }),
+        other: compute({ run: () => 2 }),
+      },
+      edges: [
+        { from: "pause", to: "after" },
+        { from: "pause", to: "other" },
+      ],
+    });
     expect(() => validateWorkflowDefinition(workflow)).toThrow(
-      /checkpoint node must not declare an outgoing edge/,
+      /must not declare multiple outgoing edges/,
     );
   });
 });
@@ -584,7 +602,7 @@ describe("shell robustness", () => {
 
 describe("observer isolation", () => {
   it("completes the run even when onEvent throws", async () => {
-    const outputRoot = await makeTempDir("pi-workflows-observer");
+    const outputRoot = await makeTempDir("pi-flow-observer");
     const engine = new WorkflowEngine({
       executor: new ScriptedExecutor(),
       outputRoot,

@@ -61,14 +61,14 @@ describe("parseCliArgs", () => {
   });
 });
 
-describe("pi-workflows CLI", () => {
+describe("pi-flow CLI", () => {
   it("prints usage for help", async () => {
     expect(await main(["--help"])).toBe(0);
-    expect(stdout).toContain("pi-workflows — live terminal viewer");
+    expect(stdout).toContain("pi-flow — live terminal viewer");
   });
 
   it("lists runs", async () => {
-    const outputRoot = await makeTempDir("pi-workflows-cli");
+    const outputRoot = await makeTempDir("pi-flow-cli");
     const runId = await makeCompletedRun(outputRoot);
     expect(await main(["runs", "--dir", outputRoot])).toBe(0);
     expect(stdout).toContain(runId);
@@ -76,13 +76,13 @@ describe("pi-workflows CLI", () => {
   });
 
   it("reports an empty runs dir", async () => {
-    const outputRoot = await makeTempDir("pi-workflows-cli");
+    const outputRoot = await makeTempDir("pi-flow-cli");
     expect(await main(["runs", "--dir", outputRoot])).toBe(0);
     expect(stdout).toContain("No workflow runs found");
   });
 
   it("renders a run detail snapshot with --once", async () => {
-    const outputRoot = await makeTempDir("pi-workflows-cli");
+    const outputRoot = await makeTempDir("pi-flow-cli");
     const runId = await makeCompletedRun(outputRoot);
     expect(await main(["view", runId, "--dir", outputRoot, "--once"])).toBe(0);
     expect(stdout).toContain("workflow cli-demo");
@@ -90,14 +90,14 @@ describe("pi-workflows CLI", () => {
   });
 
   it("renders the run list with --once and no run id", async () => {
-    const outputRoot = await makeTempDir("pi-workflows-cli");
+    const outputRoot = await makeTempDir("pi-flow-cli");
     await makeCompletedRun(outputRoot);
     expect(await main(["view", "--dir", outputRoot, "--once"])).toBe(0);
-    expect(stdout).toContain("pi-workflows — runs");
+    expect(stdout).toContain("pi-flow — runs");
   });
 
   it("fails cleanly for unknown runs, bad args, and unknown commands", async () => {
-    const outputRoot = await makeTempDir("pi-workflows-cli");
+    const outputRoot = await makeTempDir("pi-flow-cli");
     expect(await main(["view", "nope", "--dir", outputRoot, "--once"])).toBe(1);
     expect(stderr).toContain("Run not found");
 

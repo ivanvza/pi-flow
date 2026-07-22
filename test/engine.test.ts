@@ -5,22 +5,28 @@ import { decision, decisionEdge } from "../src/workflows/decision.js";
 import { agent, checkpoint, compute, defineWorkflow, shell } from "../src/workflows/definition.js";
 import { WorkflowEngine, appendStepContract } from "../src/workflows/engine.js";
 import { readRunBundle } from "../src/workflows/store.js";
-import type { WorkflowTraceEvent } from "../src/workflows/types.js";
+import type { WorkflowRunState, WorkflowTraceEvent } from "../src/workflows/types.js";
 import { ScriptedExecutor, makeTempDir, waitUntil } from "./helpers.js";
 
 async function makeEngine(
   executor: ScriptedExecutor,
   options: { maxSteps?: number; defaultNodeTimeoutMs?: number } = {},
 ) {
-  const outputRoot = await makeTempDir("pi-workflows-engine");
+  const outputRoot = await makeTempDir("pi-flow-engine");
   const events: WorkflowTraceEvent[] = [];
+  // `state` is the engine's live object, so snapshot it per event for tests
+  // that need to inspect a run mid-flight.
+  const snapshots: WorkflowRunState[] = [];
   const engine = new WorkflowEngine({
     executor,
     outputRoot,
-    onEvent: (event) => events.push(event),
+    onEvent: (event, state) => {
+      events.push(event);
+      snapshots.push(structuredClone(state));
+    },
     ...options,
   });
-  return { engine, outputRoot, events };
+  return { engine, outputRoot, events, snapshots };
 }
 
 describe("WorkflowEngine", () => {
@@ -195,6 +201,107 @@ describe("WorkflowEngine", () => {
     expect(state.waitingOn).toBe("hold");
     expect(state.finalOutput).toEqual({ summary: "needs review" });
     expect(state.steps.map((step) => step.nodeId)).toEqual(["hold"]);
+    expect(state.finishedAt).toBeDefined();
+  });
+
+  it("parks at a checkpoint that declares an outgoing edge, then resumes past it", async () => {
+    const workflow = defineWorkflow({
+      name: "resumable",
+      startAt: "start",
+      nodes: {
+        start: compute({ run: () => ({ ready: true }) }),
+        review: checkpoint({ summary: "needs review" }),
+        final: compute({ run: () => ({ done: "after checkpoint" }) }),
+      },
+      edges: [
+        { from: "start", to: "review" },
+        { from: "review", to: "final" },
+      ],
+    });
+    const { engine, events, snapshots } = await makeEngine(new ScriptedExecutor());
+
+    // A resumable park never resolves engine.run(), so the park has to be
+    // observed from the trace rather than awaited.
+    const running = engine.run(workflow, {});
+    await waitUntil(() => events.some((event) => event.type === "run_waiting"));
+
+    const parked = snapshots.at(-1);
+    expect(parked?.status).toBe("waiting");
+    expect(parked?.waitingOn).toBe("review");
+    expect(parked?.finishedAt).toBeUndefined();
+    expect(parked?.finalOutput).toBeUndefined();
+
+    engine.resume();
+    const { state, runDir } = await running;
+
+    expect(state.status).toBe("completed");
+    expect(state.waitingOn).toBeUndefined();
+    expect(state.finishedAt).toBeDefined();
+    expect(state.finalOutput).toEqual({ done: "after checkpoint" });
+    expect(state.steps.map((step) => step.nodeId)).toEqual(["start", "review", "final"]);
+
+    const trace = await fs.readFile(path.join(runDir, "trace.ndjson"), "utf8");
+    const parsed = trace
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as WorkflowTraceEvent);
+    const types = parsed.map((event) => event.type);
+    expect(types.indexOf("run_waiting")).toBeLessThan(types.indexOf("run_resumed"));
+    expect(types.indexOf("run_resumed")).toBeLessThan(types.indexOf("run_completed"));
+    const seqs = parsed.map((event) => event.seq);
+    expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+    expect(new Set(seqs).size).toBe(seqs.length);
+  });
+
+  it("cancel releases a run parked at a checkpoint and clears waitingOn", async () => {
+    const workflow = defineWorkflow({
+      name: "park-cancel",
+      startAt: "review",
+      nodes: {
+        review: checkpoint({ summary: "needs review" }),
+        final: compute({ run: () => 2 }),
+      },
+      edges: [{ from: "review", to: "final" }],
+    });
+    const { engine, events } = await makeEngine(new ScriptedExecutor());
+
+    const running = engine.run(workflow, {});
+    await waitUntil(() => events.some((event) => event.type === "run_waiting"));
+
+    engine.cancel();
+    const { state } = await running;
+
+    expect(state.status).toBe("cancelled");
+    expect(state.waitingOn).toBeUndefined();
+    expect(state.steps.map((step) => step.nodeId)).toEqual(["review"]);
+  });
+
+  it("routes a switch edge on the checkpoint's own decision output", async () => {
+    const workflow = defineWorkflow({
+      name: "park-switch",
+      startAt: "review",
+      nodes: {
+        review: checkpoint({ run: () => ({ decision: "approve" }) }),
+        approve: compute({ run: () => "approved" }),
+        reject: compute({ run: () => "rejected" }),
+      },
+      edges: [
+        {
+          from: "review",
+          switch: { on: "$.decision", cases: { approve: "approve", reject: "reject" } },
+        },
+      ],
+    });
+    const { engine, events } = await makeEngine(new ScriptedExecutor());
+
+    const running = engine.run(workflow, {});
+    await waitUntil(() => events.some((event) => event.type === "run_waiting"));
+    engine.resume();
+    const { state } = await running;
+
+    expect(state.status).toBe("completed");
+    expect(state.finalOutput).toBe("approved");
+    expect(state.steps.map((step) => step.nodeId)).toEqual(["review", "approve"]);
   });
 
   it("runs shell actions and records receipts", async () => {

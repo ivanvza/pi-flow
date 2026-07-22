@@ -28,9 +28,12 @@ is chronological order.
 
 Every JSON file in the bundle is written atomically (write to a temp file in
 the same directory, then rename), so a reader never sees a partial document. `trace.ndjson` is append-only, one JSON object
-per line, with writes serialized per file. After a run reaches a terminal
-status (`completed`, `failed`, `timed_out`, `cancelled`, or `waiting`), the
-bundle no longer changes.
+per line, with writes serialized per file. **A bundle is terminal if and only
+if `finishedAt` is present**, and a terminal bundle no longer changes. `status`
+alone is not enough: a `waiting` bundle _with_ `finishedAt` ended at a
+checkpoint, while a `waiting` bundle _without_ it is parked at a resumable
+checkpoint in a live session and will change again (or was abandoned when that
+session died). No cross-file join is required to tell them apart.
 
 A live viewer needs only two behaviors. Treat `state.json` as the current
 projection and re-read it on any file change, and treat `trace.ndjson` as the
@@ -79,9 +82,10 @@ where the latest attempt wins on loops) and in `results` (the full result
 record including the outcome and timing). The ordered history is `steps`,
 with one record per node execution that includes the prompt text for agent
 steps and an action receipt with the command, exit code, and duration for
-action steps. When a run pauses at a checkpoint, `waitingOn` names the
-checkpoint node. Terminal runs carry `finalOutput` on success and `error` on
-failure.
+action steps. While a run is parked at a checkpoint, `waitingOn` names the
+checkpoint node; it is cleared when the run resumes or is cancelled. Runs carry
+`finalOutput` on success and `error` on failure once a terminal status is
+reached — a resumable park sets neither `finalOutput` nor `finishedAt`.
 
 ## trace.ndjson
 
@@ -101,9 +105,15 @@ One event per line, monotonically sequenced per run:
 ```
 
 Event types: `run_started`, `node_started`, `agent_prompt_sent`,
-`node_finished`, `node_failed`, and a terminal `run_<status>`. The `scope`
-field (`run`, `node`, `agent`, `action`) groups them. Consumers should ignore
-unknown event types so new ones can be added within the same schema version.
+`node_finished`, `node_failed`, `run_paused`, `run_resumed`, and `run_<status>`.
+The `scope` field (`run`, `node`, `agent`, `action`) groups them. Consumers
+should ignore unknown event types so new ones can be added within the same
+schema version.
+
+A run may emit `run_waiting`, then `run_resumed`, further node events, and a
+later `run_<status>`, so consumers **must not** treat the first `run_<status>`
+as end-of-stream. `state.json` is the current projection and must be re-read on
+change, as above.
 
 ## Versioning
 

@@ -1,8 +1,8 @@
-import { ansi, fitWidth, sanitizeText } from "../render/ansi.js";
-import { formatDuration, runElapsedMs } from "../render/format.js";
-import { renderGraphLines } from "../render/graph-render.js";
 import type { LoadedRunBundle } from "../workflows/store.js";
 import type { WorkflowRunStatus, WorkflowStepRecord } from "../workflows/types.js";
+import { ansi, fitWidth, sanitizeText } from "./ansi.js";
+import { formatDuration, runElapsedMs } from "./format.js";
+import { renderGraphLines } from "./graph-render.js";
 
 export { formatDuration, runElapsedMs };
 
@@ -24,15 +24,50 @@ export function statusLabel(status: WorkflowRunStatus): string {
   return STATUS_COLORS[status](status);
 }
 
+/** Uncoloured run-status glyphs, shared by the widget and the in-pi picker. */
+export const STATUS_GLYPHS: Record<WorkflowRunStatus, string> = {
+  running: "◐",
+  waiting: "⏸",
+  completed: "✓",
+  failed: "✗",
+  timed_out: "✗",
+  cancelled: "✗",
+};
+
+/**
+ * One picker row per run. Declared here rather than imported from pi-tui: this
+ * module is shared with the standalone binary, which must not depend on pi.
+ * The shape is structurally assignable to pi-tui's `SelectItem`.
+ */
+export type RunListItem = {
+  value: string;
+  label: string;
+  description: string;
+};
+
+/** Run rows for a native picker. Emits no ANSI so the host theme owns styling. */
+export function runListItems(bundles: LoadedRunBundle[], now: Date = new Date()): RunListItem[] {
+  return bundles.map(({ runDir, state }) => {
+    const title = state.runTitle ? ` — ${sanitizeText(state.runTitle)}` : "";
+    return {
+      value: runDir,
+      label: `${STATUS_GLYPHS[state.status]} ${sanitizeText(state.workflowName)}${title}`,
+      description: `${state.runId} · ${formatDuration(runElapsedMs(state, now))}`,
+    };
+  });
+}
+
 function previewValue(value: unknown, maxLength: number): string {
   if (value === undefined) {
     return "";
   }
   const text = typeof value === "string" ? value : JSON.stringify(value);
+  // Bound before the character-by-character passes below: step output is
+  // model-controlled and capped at 1 MB per stream, and this only ever yields
+  // `maxLength` characters. 4x leaves room for whitespace collapsing.
+  const bounded = (text ?? "").slice(0, maxLength * 4);
   // Model-controlled values must not carry escape sequences into the terminal.
-  const singleLine = sanitizeText(text ?? "")
-    .replaceAll(/\s+/g, " ")
-    .trim();
+  const singleLine = sanitizeText(bounded).replaceAll(/\s+/g, " ").trim();
   return singleLine.length <= maxLength ? singleLine : `${singleLine.slice(0, maxLength - 1)}…`;
 }
 
@@ -44,7 +79,7 @@ export function renderRunListLines(
   now: Date = new Date(),
 ): string[] {
   const lines: string[] = [];
-  lines.push(ansi.bold("pi-workflows — runs"));
+  lines.push(ansi.bold("pi-flow — runs"));
   lines.push(ansi.dim("↑/↓ select · enter open · q quit"));
   lines.push("");
   if (bundles.length === 0) {
@@ -117,14 +152,23 @@ function nodeStatusLine(bundle: LoadedRunBundle, nodeId: string, width: number, 
   return fitWidth(`  ${glyph} ${nodeId} ${ansi.dim(`[${nodeType}]`)}${suffix}`, width);
 }
 
+const MAX_INSPECTOR_LINES = 200;
+
 /** Pretty-printed JSON body of the selected step for the inspector pane. */
 function inspectorLines(step: WorkflowStepRecord, width: number): string[] {
   const lines: string[] = [];
   const body = step.error !== undefined ? step.error : step.output;
   const rendered =
     typeof body === "string" && step.error !== undefined ? body : JSON.stringify(body, null, 2);
-  for (const raw of (rendered ?? "null").split("\n")) {
-    lines.push(fitWidth(`  ${sanitizeText(raw)}`, width));
+  // Bound the body: a single shell step can capture 1 MB per stream, and both
+  // sanitizeText and fitWidth scan character by character. Without this the
+  // in-pi overlay re-scans megabytes on every 1s tick, on pi's TUI thread.
+  const raws = (rendered ?? "null").split("\n");
+  for (const raw of raws.slice(0, MAX_INSPECTOR_LINES)) {
+    lines.push(fitWidth(`  ${sanitizeText(raw.slice(0, width * 2))}`, width));
+  }
+  if (raws.length > MAX_INSPECTOR_LINES) {
+    lines.push(ansi.dim(`  … ${raws.length - MAX_INSPECTOR_LINES} more lines truncated`));
   }
   if (step.action) {
     const receipt = [
@@ -144,6 +188,8 @@ function inspectorLines(step: WorkflowStepRecord, width: number): string[] {
  * Full-run detail view: header, graph pane, step timeline, inspector.
  * `scroll` shifts the viewport down over the full body; `selectedStepIndex`
  * scrubs the replay position (defaults to the latest step, i.e. live).
+ * `hint` emits the inline key hint; hosts that pin their own footer pass false
+ * so the two do not contradict each other.
  */
 export function renderRunDetailLines(
   bundle: LoadedRunBundle,
@@ -151,6 +197,7 @@ export function renderRunDetailLines(
   now: Date = new Date(),
   scroll = 0,
   selectedStepIndex: number | null = null,
+  hint = true,
 ): string[] {
   const state = bundle.state;
   const steps = state.steps;
@@ -171,7 +218,9 @@ export function renderRunDetailLines(
       size.width,
     ),
   );
-  lines.push(ansi.dim("q back · r refresh · ↑/↓ scroll · ←/→ replay steps"));
+  if (hint) {
+    lines.push(ansi.dim("↑/↓ scroll · ←/→ replay steps · esc back"));
+  }
   lines.push("");
 
   const graph = renderGraphLines(bundle, selected, now, { nodeStyle: "box" }).map((line) =>
@@ -224,6 +273,7 @@ export function maxDetailScroll(
   bundle: LoadedRunBundle,
   size: ViewportSize,
   selectedStepIndex: number | null = null,
+  hint = true,
 ): number {
   const total = renderRunDetailLines(
     bundle,
@@ -231,6 +281,57 @@ export function maxDetailScroll(
     new Date(),
     0,
     selectedStepIndex,
+    hint,
   ).length;
   return Math.max(0, total - size.height);
+}
+
+/** Detail-view cursor: `selectedStep` null follows the latest step live. */
+export type DetailNav = {
+  scroll: number;
+  selectedStep: number | null;
+};
+
+export type DetailNavKey = "up" | "down" | "left" | "right" | "pageUp" | "pageDown";
+
+const NAV_DELTAS: Record<DetailNavKey, { scroll: number; step: number }> = {
+  up: { scroll: -1, step: 0 },
+  down: { scroll: 1, step: 0 },
+  pageUp: { scroll: -1, step: 0 },
+  pageDown: { scroll: 1, step: 0 },
+  left: { scroll: 0, step: -1 },
+  right: { scroll: 0, step: 1 },
+};
+
+/** Scroll/step delta for a navigation key, with paging scaled by `page`. */
+export function navDelta(key: DetailNavKey, page: number): { scroll: number; step: number } {
+  const delta = NAV_DELTAS[key];
+  const scale = key === "pageUp" || key === "pageDown" ? page : 1;
+  return { scroll: delta.scroll * scale, step: delta.step };
+}
+
+/**
+ * Apply a navigation delta to the detail cursor. A zero delta renormalises
+ * after new steps land, so a cursor scrubbed to the tail resumes following
+ * live and the scroll offset is re-clamped against fresh content.
+ */
+export function moveDetailNav(
+  nav: DetailNav,
+  delta: { scroll: number; step: number },
+  bounds: { maxScroll: number; stepCount: number },
+): DetailNav {
+  const { stepCount } = bounds;
+  const base =
+    delta.step === 0 ? nav.selectedStep : (nav.selectedStep ?? stepCount - 1) + delta.step;
+  const selectedStep =
+    base === null || stepCount === 0 || base >= stepCount - 1 ? null : Math.max(0, base);
+  // Only a cursor that actually moved resets the scroll offset: stepping right
+  // while already live, or left while already at step 0, must not jump the
+  // reader back to the top. delta.scroll is 0 on step keys, so the clamp branch
+  // is a no-op for them.
+  const scroll =
+    selectedStep === nav.selectedStep
+      ? Math.max(0, Math.min(nav.scroll + delta.scroll, Math.max(0, bounds.maxScroll)))
+      : 0;
+  return { scroll, selectedStep };
 }

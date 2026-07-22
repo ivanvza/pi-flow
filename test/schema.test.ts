@@ -199,7 +199,7 @@ describe("store misc", () => {
   });
 
   it("returns null for unreadable bundles", async () => {
-    const dir = await makeTempDir("pi-workflows-junk");
+    const dir = await makeTempDir("pi-flow-junk");
     expect(await readRunBundle(dir)).toBeNull();
   });
 });

@@ -1,11 +1,15 @@
-import { listRunBundles, readRunBundle } from "../workflows/store.js";
-import type { LoadedRunBundle } from "../workflows/store.js";
+import readline from "node:readline";
 import {
+  type DetailNav,
   maxDetailScroll,
+  moveDetailNav,
+  navDelta,
   renderRunDetailLines,
   renderRunListLines,
   type ViewportSize,
-} from "./render.js";
+} from "../render/run-view.js";
+import { listRunBundles, readRunBundle } from "../workflows/store.js";
+import type { LoadedRunBundle } from "../workflows/store.js";
 import { watchRunsDir } from "./watch.js";
 
 const ALT_SCREEN_ON = "\u001b[?1049h\u001b[?25l";
@@ -36,10 +40,9 @@ export async function runViewer(options: ViewerOptions): Promise<void> {
   let mode: ViewerMode = { view: "list" };
   let bundles: LoadedRunBundle[] = [];
   let selectedIndex = 0;
-  let detailScroll = 0;
-  /** Replay position; null follows the latest step live. */
-  let selectedStep: number | null = null;
-  let detailStepCount = 0;
+  /** Scroll offset plus replay position; `selectedStep` null follows live. */
+  let nav: DetailNav = { scroll: 0, selectedStep: null };
+  let detailBounds = { maxScroll: 0, stepCount: 0 };
 
   if (options.runId) {
     bundles = await listRunBundles(options.runsDir);
@@ -66,13 +69,14 @@ export async function runViewer(options: ViewerOptions): Promise<void> {
     if (!bundle) {
       return ["Run bundle disappeared. Press q to go back."];
     }
-    detailStepCount = bundle.state.steps.length;
-    if (selectedStep !== null && selectedStep >= detailStepCount - 1) {
-      // Scrubbed to (or past) the end: snap back to following live updates.
-      selectedStep = null;
-    }
-    detailScroll = Math.min(detailScroll, maxDetailScroll(bundle, size, selectedStep));
-    return renderRunDetailLines(bundle, size, new Date(), detailScroll, selectedStep);
+    // Renormalise against fresh content: a cursor scrubbed to the tail snaps
+    // back to live and the scroll offset is re-clamped.
+    detailBounds = {
+      maxScroll: maxDetailScroll(bundle, size, nav.selectedStep),
+      stepCount: bundle.state.steps.length,
+    };
+    nav = moveDetailNav(nav, { scroll: 0, step: 0 }, detailBounds);
+    return renderRunDetailLines(bundle, size, new Date(), nav.scroll, nav.selectedStep);
   };
 
   process.stdout.write(ALT_SCREEN_ON);
@@ -87,14 +91,28 @@ export async function runViewer(options: ViewerOptions): Promise<void> {
   if (rawModeSupported) {
     process.stdin.setRawMode(true);
   }
+  // Keypress events only fire on a decoded stream; raw mode stays because the
+  // terminal must not line-buffer.
+  readline.emitKeypressEvents(process.stdin);
   process.stdin.resume();
+
+  type Keypress = { name?: string; ctrl?: boolean };
+  let onKeypress: (str: string, key: Keypress) => void = () => {};
 
   try {
     await new Promise<void>((resolve) => {
-      const onKey = (data: Buffer) => {
-        const key = data.toString("utf8");
-        if (key === "q" || key === "\u0003" || key === "\u001b") {
-          if (mode.view === "detail" && key === "q") {
+      onKeypress = (_str, key) => {
+        const name = key.name ?? "";
+        // Raw mode suppresses SIGINT, so ctrl+c is only what this handler makes
+        // it. It must always quit, from any view.
+        if (key.ctrl && name === "c") {
+          resolve();
+          return;
+        }
+        if (name === "q" || name === "escape") {
+          // Leaving the detail view returns to the run list, matching the
+          // in-pi overlay; from the list these quit.
+          if (mode.view === "detail") {
             mode = { view: "list" };
             void draw();
             return;
@@ -102,54 +120,36 @@ export async function runViewer(options: ViewerOptions): Promise<void> {
           resolve();
           return;
         }
-        handleNavigationKey(key);
-      };
-
-      const handleNavigationKey = (key: string) => {
-        if (mode.view !== "list") {
-          if (key === "r") {
-            void draw();
-          } else if (key === "\u001b[A" || key === "k") {
-            detailScroll = Math.max(0, detailScroll - 1);
-            void draw();
-          } else if (key === "\u001b[B" || key === "j") {
-            // Clamped against the content height in renderDetail.
-            detailScroll += 1;
-            void draw();
-          } else if (key === "\u001b[D" || key === "h") {
-            const current = selectedStep ?? detailStepCount - 1;
-            selectedStep = Math.max(0, current - 1);
-            void draw();
-          } else if (key === "\u001b[C" || key === "l") {
-            // renderDetail snaps back to live once this reaches the end.
-            selectedStep = selectedStep === null ? null : selectedStep + 1;
+        if (mode.view === "detail") {
+          if (name === "up" || name === "down" || name === "left" || name === "right") {
+            nav = moveDetailNav(nav, navDelta(name, 1), detailBounds);
             void draw();
           }
           return;
         }
-        if (key === "\u001b[A" || key === "k") {
+        if (name === "up") {
           selectedIndex = Math.max(0, selectedIndex - 1);
           void draw();
-        } else if (key === "\u001b[B" || key === "j") {
+        } else if (name === "down") {
           selectedIndex = Math.min(Math.max(0, bundles.length - 1), selectedIndex + 1);
           void draw();
-        } else if (key === "\r" || key === "\n") {
+        } else if (name === "return") {
           const selected = bundles[selectedIndex];
           if (selected) {
             mode = { view: "detail", runDir: selected.runDir };
-            detailScroll = 0;
-            selectedStep = null;
+            nav = { scroll: 0, selectedStep: null };
             void draw();
           }
         }
       };
 
-      process.stdin.on("data", onKey);
+      process.stdin.on("keypress", onKeypress);
       void draw();
     });
   } finally {
     clearInterval(ticker);
     stopWatching();
+    process.stdin.off("keypress", onKeypress);
     if (rawModeSupported) {
       process.stdin.setRawMode(false);
     }

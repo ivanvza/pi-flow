@@ -1,19 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { ansi } from "../src/render/ansi.js";
 import { stripAnsi } from "../src/render/ansi.js";
-import { renderRunListLines, statusLabel } from "../src/viewer/render.js";
+import { renderRunListLines, statusLabel } from "../src/render/run-view.js";
 import { action, checkpoint, compute, defineWorkflow, shell } from "../src/workflows/definition.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
 import { ScriptedExecutor, makeTempDir } from "./helpers.js";
 
 async function makeEngine() {
-  const outputRoot = await makeTempDir("pi-workflows-engine-more");
+  const outputRoot = await makeTempDir("pi-flow-engine-more");
   return new WorkflowEngine({ executor: new ScriptedExecutor(), outputRoot });
 }
 
 describe("WorkflowEngine additional paths", () => {
   it("exposes its output root", async () => {
-    const outputRoot = await makeTempDir("pi-workflows-root");
+    const outputRoot = await makeTempDir("pi-flow-root");
     const engine = new WorkflowEngine({ executor: new ScriptedExecutor(), outputRoot });
     expect(engine.outputRoot).toBe(outputRoot);
   });
