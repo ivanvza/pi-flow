@@ -81,22 +81,10 @@ heavy border, branches carry their case labels, the taken path is highlighted,
 and loops route back through a right-hand gutter. Scroll a tall graph with
 `shift+up` / `shift+down`.
 
-`/workflow runs` opens a run browser inside pi: pick a run, scrub its steps with
-`left` / `right`, and scroll the step output with `up` / `down`. This is the
-quickest way to check on a run mid-session.
-
-Runs also persist to `~/.pi/agent/workflows/runs/`, so a standalone viewer can
-tail them from a second terminal, after pi exits, or in CI. Run it from a clone:
-
-```bash
-npx tsx src/viewer/cli.ts view          # live picker
-npx tsx src/viewer/cli.ts view <runId>  # one run
-npx tsx src/viewer/cli.ts runs          # list recent runs
-npx tsx src/viewer/cli.ts view --once   # print a snapshot and exit
-```
-
-`npm install && npm run build && npm link` puts the same viewer on your PATH as
-the `pi-flow` command.
+`/workflow runs` opens a run browser inside pi: pick a past run, scrub its steps
+with `left` / `right`, and scroll the step output with `up` / `down`. This is the
+quickest way to review a run, mid-session or after it finishes. Runs are recorded
+under `~/.pi/agent/workflows/runs/`.
 
 ## Node types
 
