@@ -419,7 +419,10 @@ export default function piWorkflows(pi: ExtensionAPI) {
     activeRun = run;
     clearWidgetTimer();
     startWidgetTicker(ctx, run);
-    notify(ctx, `Workflow ${workflow.name} started. Follow it live with: pi-flow view`);
+    notify(
+      ctx,
+      `Workflow ${workflow.name} started. Follow it in the widget above, or /workflow runs.`,
+    );
 
     engine
       .run(workflow, input, { workflowPath: resolved.path })
@@ -525,7 +528,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
         .slice(0, 5)
         .map((bundle) => bundle.state.runId)
         .join(", ");
-      notify(ctx, `Recent runs: ${recent}. View one with: pi-flow view <runId>`);
+      notify(ctx, `Recent runs: ${recent}. Bundles are under ${dir}.`);
       return;
     }
     let index = 0;

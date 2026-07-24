@@ -362,9 +362,9 @@ pi's input dialog for an optional task; enter with text starts the run with
 without starting anything.
 
 `/workflow runs` opens the in-pi run browser: an overlay list of run bundles
-newest first, feeding a live detail view with the same header, graph, step
-timeline and inspector the standalone viewer shows. The detail view re-reads
-its bundle once a second, so a running workflow animates in place.
+newest first, feeding a live detail view with a header, graph, step timeline,
+and step inspector. The detail view re-reads its bundle once a second, so a
+running workflow animates in place.
 
 | View       | Keys                                                                       |
 | ---------- | -------------------------------------------------------------------------- |

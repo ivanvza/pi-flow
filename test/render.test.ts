@@ -4,7 +4,6 @@ import {
   formatDuration,
   maxDetailScroll,
   renderRunDetailLines,
-  renderRunListLines,
   runElapsedMs,
 } from "../src/render/run-view.js";
 import { compute, defineWorkflow } from "../src/workflows/definition.js";
@@ -67,24 +66,6 @@ describe("runElapsedMs", () => {
     const finished = makeBundle({ finishedAt: "2026-07-19T00:00:10.000Z" }).state;
     expect(runElapsedMs(finished, NOW)).toBe(10_000);
     expect(runElapsedMs(makeBundle().state, NOW)).toBe(60_000);
-  });
-});
-
-describe("renderRunListLines", () => {
-  const size = { width: 100, height: 20 };
-
-  it("renders an empty message when there are no runs", () => {
-    const lines = renderRunListLines([], 0, size, NOW).map(stripAnsi);
-    expect(lines.at(-1)).toContain("No workflow runs found");
-  });
-
-  it("renders one line per run with a selection marker", () => {
-    const bundles = [makeBundle(), makeBundle({ runId: "run-2", status: "completed" })];
-    const lines = renderRunListLines(bundles, 1, size, NOW).map(stripAnsi);
-    const runLines = lines.filter((line) => line.includes("run-"));
-    expect(runLines).toHaveLength(2);
-    expect(runLines[0]).toMatch(/^ {2}running/);
-    expect(runLines[1]).toMatch(/^› completed/);
   });
 });
 

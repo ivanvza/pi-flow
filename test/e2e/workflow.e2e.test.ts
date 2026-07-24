@@ -1,13 +1,10 @@
-import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { WorkflowRunState } from "../../src/workflows/types.js";
 import { makeTempDir } from "../helpers.js";
 import { startMockOpenAiServer } from "./mock-openai.js";
-
-const execFileAsync = promisify(execFile);
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const PI_BIN = path.join(REPO_ROOT, "node_modules", ".bin", "pi");
 const EXTENSION_PATH = path.join(REPO_ROOT, "src", "extension", "index.ts");
@@ -299,29 +296,4 @@ describe.sequential("pi-flow end to end", () => {
       () => `pi stderr:\n${pi.stderr()}\npi stdout tail:\n${pi.stdoutLines.slice(-20).join("\n")}`,
     );
   }, 120_000);
-
-  it("renders the finished run in the viewer CLI", async () => {
-    const { state } = await waitForRunState(
-      runsDir,
-      (candidate) => candidate.status === "completed",
-      () => "expected the previous test to have completed a run",
-      5_000,
-    );
-    const { stdout } = await execFileAsync(
-      process.execPath,
-      [
-        "--import",
-        "tsx",
-        path.join(REPO_ROOT, "src", "viewer", "cli.ts"),
-        "view",
-        state.runId,
-        "--once",
-      ],
-      { cwd: REPO_ROOT, env: { ...process.env, PI_WORKFLOWS_RUNS_DIR: runsDir, NO_COLOR: "1" } },
-    );
-    expect(stdout).toContain("workflow e2e");
-    expect(stdout).toContain("✓ propose [agent]");
-    expect(stdout).toContain("✓ confirm [agent]");
-    expect(stdout).toContain("✓ implement [action]");
-  }, 30_000);
 });

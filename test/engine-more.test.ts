@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ansi } from "../src/render/ansi.js";
 import { stripAnsi } from "../src/render/ansi.js";
-import { renderRunListLines, statusLabel } from "../src/render/run-view.js";
 import { action, checkpoint, compute, defineWorkflow, shell } from "../src/workflows/definition.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
 import { ScriptedExecutor, makeTempDir } from "./helpers.js";
@@ -96,20 +95,7 @@ describe("WorkflowEngine additional paths", () => {
   });
 });
 
-describe("render status colors", () => {
-  it("colors every run status", () => {
-    for (const status of [
-      "running",
-      "waiting",
-      "completed",
-      "failed",
-      "timed_out",
-      "cancelled",
-    ] as const) {
-      expect(stripAnsi(statusLabel(status))).toBe(status);
-    }
-  });
-
+describe("ansi style helpers", () => {
   it("styles text with each ansi helper", () => {
     for (const style of [
       ansi.bold,
@@ -123,38 +109,5 @@ describe("render status colors", () => {
     ]) {
       expect(stripAnsi(style("x"))).toBe("x");
     }
-  });
-
-  it("scrolls long run lists around the selection", () => {
-    const bundles = Array.from({ length: 30 }, (_ignored, index) => ({
-      runDir: `/tmp/run-${index}`,
-      manifest: {
-        schema: "pi-workflows.run-bundle.v1" as const,
-        runId: `run-${index}`,
-        workflowName: "demo",
-        startedAt: "2026-07-19T00:00:00.000Z",
-        status: "completed" as const,
-        traceSchema: "pi-workflows.trace-event.v1" as const,
-        paths: { workflow: "workflow.json", state: "state.json", trace: "trace.ndjson" },
-      },
-      state: {
-        runId: `run-${index}`,
-        workflowName: "demo",
-        runTitle: `title ${index}`,
-        startedAt: "2026-07-19T00:00:00.000Z",
-        finishedAt: "2026-07-19T00:00:10.000Z",
-        updatedAt: "2026-07-19T00:00:10.000Z",
-        status: "completed" as const,
-        input: {},
-        outputs: {},
-        results: {},
-        steps: [],
-      },
-      snapshot: null,
-    }));
-    const lines = renderRunListLines(bundles, 25, { width: 120, height: 10 }, new Date());
-    const text = lines.map(stripAnsi).join("\n");
-    expect(text).toContain("run-25");
-    expect(text).not.toContain("run-0 ");
   });
 });

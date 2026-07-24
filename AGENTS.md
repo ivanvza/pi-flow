@@ -13,8 +13,8 @@ Repository rules:
 
 - Use Conventional Commits for commit messages and PR titles.
 - Respect the dependency boundaries in `slophammer.yml`: `src/workflows` never
-  imports pi or the other layers; `src/extension` and `src/viewer` may import
-  `src/workflows` and never each other.
+  imports pi or the other layers; `src/render` may import `src/workflows`; and
+  `src/extension` may import both and is the only layer that imports pi.
 - Persisted JSON is camelCase with versioned `schema` identifiers. Breaking a
   persisted shape means bumping the schema version string
   (see `docs/run-bundles.md`).

@@ -7,16 +7,15 @@ authoring workflows, see [workflows.md](workflows.md).
 
 ```
 src/workflows/   engine core: definitions, graph, engine, store, loader
-src/extension/   pi integration: /workflow command, workflow tool, widget
+src/extension/   pi integration: /workflow command, workflow tool, widget, overlays
 src/render/      shared graph layout, terminal drawing, and the run views (pi-agnostic)
-src/viewer/      standalone TUI viewer over run bundles
 skills/          agent skills shipped with the package (see package.json `pi.skills`)
 ```
 
 The dependency direction is enforced by `slophammer.yml`. `src/workflows`
-imports nothing outside itself and never imports pi. `src/extension` and
-`src/viewer` may import `src/workflows` and never each other. The viewer
-observes runs purely through the bundle files, so it works from any process.
+imports nothing outside itself and never imports pi. `src/render` may import
+`src/workflows` only. `src/extension` may import both, and is the only layer
+that imports pi.
 
 Within `src/render`, `graph.ts` computes a pure layered layout (ported from
 the acpx replay viewer: labelled switch expansion, DFS back-edge detection,
@@ -24,17 +23,16 @@ longest-path layering, barycenter ordering, virtual pass-through cells for
 long edges), `canvas.ts` is a character grid that merges box-drawing
 characters by connectivity, and `graph-render.ts` turns a run bundle plus a
 replay position into the drawn graph in one of two node styles: `box`
-(bordered nodes, used by the viewer and the in-pi widget) or `line`
+(bordered nodes, used by the in-pi widget and run overlay) or `line`
 (single-line nodes). The widget windows the boxed graph around the active
 node to stay inside pi's 10-line widget cap; `shift+↑`/`shift+↓` shortcuts
 (registered through pi's `registerShortcut`) scroll that window manually, and
 the scroll resets to follow mode when the run records a new step. `run-view.ts`
-in `src/render`
-composes the full detail view (header, graph, step timeline, step inspector)
-and stays pure so tests can assert on rendered lines. It is imported by both
-`src/viewer` (the standalone binary) and `src/extension` (the in-pi overlay),
-which is why it must never import pi-tui: the binary ships to users who may
-not have pi installed.
+in `src/render` composes the full detail view (header, graph, step timeline,
+step inspector) and stays pure so tests can assert on rendered lines. It lives
+in `src/render` (which may import only `src/workflows`), so it never imports
+pi-tui and the in-pi overlay in `src/extension` layers its pi-specific framing
+on top.
 
 `src/extension/overlay.ts` is the only file with runtime (non-type) imports
 from pi — `SelectList`, `Container`, `Text`, `Key`/`matchesKey` from

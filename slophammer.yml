@@ -27,8 +27,3 @@ typescript:
       allow:
         - src/workflows
         - src/render
-    # The viewer only reads run bundles; it must never import the extension.
-    - from: src/viewer
-      allow:
-        - src/workflows
-        - src/render

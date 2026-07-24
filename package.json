@@ -11,9 +11,6 @@
     "type": "git",
     "url": "git+https://github.com/ivanvza/pi-flow.git"
   },
-  "bin": {
-    "pi-flow": "dist/viewer/cli.js"
-  },
   "files": [
     "dist",
     "src",

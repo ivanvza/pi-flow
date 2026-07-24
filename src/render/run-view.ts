@@ -20,7 +20,7 @@ const STATUS_COLORS: Record<WorkflowRunStatus, (text: string) => string> = {
   cancelled: ansi.yellow,
 };
 
-export function statusLabel(status: WorkflowRunStatus): string {
+function statusLabel(status: WorkflowRunStatus): string {
   return STATUS_COLORS[status](status);
 }
 
@@ -36,8 +36,8 @@ export const STATUS_GLYPHS: Record<WorkflowRunStatus, string> = {
 
 /**
  * One picker row per run. Declared here rather than imported from pi-tui: this
- * module is shared with the standalone binary, which must not depend on pi.
- * The shape is structurally assignable to pi-tui's `SelectItem`.
+ * module lives in src/render, which is pi-agnostic (it may import only
+ * src/workflows). The shape is structurally assignable to pi-tui's `SelectItem`.
  */
 export type RunListItem = {
   value: string;
@@ -69,44 +69,6 @@ function previewValue(value: unknown, maxLength: number): string {
   // Model-controlled values must not carry escape sequences into the terminal.
   const singleLine = sanitizeText(bounded).replaceAll(/\s+/g, " ").trim();
   return singleLine.length <= maxLength ? singleLine : `${singleLine.slice(0, maxLength - 1)}…`;
-}
-
-/** One line per run for the run picker. */
-export function renderRunListLines(
-  bundles: LoadedRunBundle[],
-  selectedIndex: number,
-  size: ViewportSize,
-  now: Date = new Date(),
-): string[] {
-  const lines: string[] = [];
-  lines.push(ansi.bold("pi-flow — runs"));
-  lines.push(ansi.dim("↑/↓ select · enter open · q quit"));
-  lines.push("");
-  if (bundles.length === 0) {
-    lines.push(ansi.dim("No workflow runs found."));
-    return lines.map((line) => fitWidth(line, size.width));
-  }
-  const visible = Math.max(1, size.height - lines.length - 1);
-  const start = Math.min(
-    Math.max(0, selectedIndex - Math.floor(visible / 2)),
-    Math.max(0, bundles.length - visible),
-  );
-  for (const [offset, bundle] of bundles.slice(start, start + visible).entries()) {
-    const index = start + offset;
-    const state = bundle.state;
-    const marker = index === selectedIndex ? ansi.cyan("›") : " ";
-    const elapsed = formatDuration(runElapsedMs(state, now));
-    const title = state.runTitle ? ` — ${sanitizeText(state.runTitle)}` : "";
-    lines.push(
-      fitWidth(
-        `${marker} ${statusLabel(state.status)}  ${ansi.bold(state.workflowName)}${title}  ${ansi.dim(
-          `${state.runId} · ${elapsed}`,
-        )}`,
-        size.width,
-      ),
-    );
-  }
-  return lines;
 }
 
 function stepLine(

@@ -40,7 +40,7 @@ export type WidgetView = {
 
 /**
  * Live-progress view for the in-pi widget: a header plus the same boxed
- * graph the standalone viewer draws. When the graph is taller than pi's
+ * graph the run overlay draws. When the graph is taller than pi's
  * widget budget, a window is shown with ↑/↓ overflow markers — centered on
  * the active node by default, or at `scroll` when the user scrolled
  * manually. Pure so it can be tested without a TUI.

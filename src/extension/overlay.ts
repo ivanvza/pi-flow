@@ -217,9 +217,9 @@ class RunDetail implements Component {
 /** Open the live detail overlay for one run. Returns when the user goes back. */
 export async function showRunDetail(ctx: ExtensionCommandContext, runDir: string): Promise<void> {
   // ponytail: the detail body keeps src/render's own 16-colour palette rather
-  // than the pi theme, because src/render is shared with the standalone binary
-  // which has no pi Theme; only the frame, title and hint are themed. Upgrade
-  // path: thread a colour-fn adapter through graph-render.ts.
+  // than the pi theme, because src/render is pi-agnostic (it may import only
+  // src/workflows) and has no pi Theme; only the frame, title and hint are
+  // themed. Upgrade path: thread a colour-fn adapter through graph-render.ts.
   try {
     await ctx.ui.custom<null>(
       (tui, theme, _keybindings, done) => new RunDetail(tui, theme, runDir, done),
