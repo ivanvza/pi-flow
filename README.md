@@ -1,5 +1,7 @@
 # pi-flow
 
+[![CI](https://github.com/ivanvza/pi-flow/actions/workflows/ci.yml/badge.svg)](https://github.com/ivanvza/pi-flow/actions/workflows/ci.yml)
+
 pi-flow is a workflow extension for the [pi coding agent](https://pi.dev). You
 define multi-step agent workflows as TypeScript graphs and trigger them from any
 pi conversation with `/workflow`. Agent steps run inside your current
