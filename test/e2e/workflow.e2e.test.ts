@@ -174,30 +174,21 @@ describe.sequential("pi-flow end to end", () => {
         return { kind: "text", text: "Step submitted." };
       }
       const stepMatch = lastUserText.match(
-        /workflow step contract \(workflow: e2e, step: ([a-z_]+), attempt: ([a-z0-9-]+)\)/i,
+        /workflow step contract \(workflow: e2e, step: ([a-z_]+)\)/i,
       );
       const step = stepMatch?.[1];
-      const attempt = stepMatch?.[2] ?? "";
       if (step === "propose") {
         return {
           kind: "tool",
           toolName: "workflow",
-          args: {
-            step: "propose",
-            attempt,
-            output: { proposal: "Ship the boring, proven design." },
-          },
+          args: { output: { proposal: "Ship the boring, proven design." } },
         };
       }
       if (step === "confirm") {
         return {
           kind: "tool",
           toolName: "workflow",
-          args: {
-            step: "confirm",
-            attempt,
-            output: { route: "y", reason: "proposal matches the holy grail" },
-          },
+          args: { output: { route: "y", reason: "proposal matches the holy grail" } },
         };
       }
       return { kind: "text", text: "Nothing to do." };

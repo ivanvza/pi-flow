@@ -127,8 +127,15 @@ At most **one outgoing edge per node**. Branch with a `switch`, never with two e
 ## Agent steps and presentation
 
 The engine appends a step contract to every `agent` prompt, and the model completes the step
-by calling the `workflow` tool once with `{ step, attempt, output }`, using `expectedOutput`
-as the target shape. Never hand-write that contract — you write only `prompt` text.
+by calling the `workflow` tool once with `{ output }`, using `expectedOutput` as the target
+shape. Never hand-write that contract — you write only `prompt` text.
+
+Write `expectedOutput` as a JSON object naming every field a downstream node reads, e.g.
+`` `{ "title": "string", "body": "string" }` ``. The engine enforces those top-level keys: a
+submission missing any is rejected and the model is made to retry, so a weak model that
+returns the wrong shape can't poison a later node. Values are freeform hints; only keys are
+checked. This is the main lever for keeping runs robust regardless of model — always list the
+keys a `compute`/downstream node will read.
 
 Agent steps run **in the current pi conversation**, so the model keeps everything discussed
 before `/workflow` started; write prompts that lean on it. One run at a time per session; a

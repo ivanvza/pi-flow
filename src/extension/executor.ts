@@ -19,6 +19,8 @@ export type ConversationStepExecutorOptions = {
   sendPrompt: (delivery: PromptDelivery) => void;
   /** Reminders sent when the agent settles without submitting. Default 2. */
   maxNudges?: number;
+  /** Rejected submissions tolerated per step before it fails. Default 5. */
+  maxRejections?: number;
 };
 
 type PendingStep = {
@@ -26,6 +28,7 @@ type PendingStep = {
   resolve: (submission: AgentStepSubmission) => void;
   reject: (error: unknown) => void;
   nudgesSent: number;
+  rejectionsSent: number;
   cleanup: () => void;
   /** Resolves when this step stops being the pending step. */
   cleared: Promise<void>;
@@ -33,24 +36,41 @@ type PendingStep = {
 };
 
 const DEFAULT_MAX_NUDGES = 2;
+// Enough for a few genuine validation-correction rounds; a model stuck
+// re-emitting or submitting garbage fails the step here instead of grinding to
+// the node timeout.
+const DEFAULT_MAX_REJECTIONS = 5;
+
+/** Byte-compare two step outputs. A re-emitted tool call preserves key order,
+ * so JSON.stringify is a sufficient duplicate check. */
+function sameOutput(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 /**
  * AgentStepExecutor that runs steps inside the current pi conversation. The
  * engine hands it a prompt; it delivers the prompt as a user message and
  * resolves once the model submits an accepted output through the `workflow`
  * tool. If the agent settles without submitting, it nudges the model a
- * bounded number of times before failing the step.
+ * bounded number of times before failing the step. A submission that just
+ * re-emits the previous step's output is rejected, and a step that spends its
+ * rejection budget fails fast rather than grinding to the node timeout.
  */
 export class ConversationStepExecutor implements AgentStepExecutor {
   private readonly sendPrompt: (delivery: PromptDelivery) => void;
   private readonly maxNudges: number;
+  private readonly maxRejections: number;
   private pending: PendingStep | null = null;
   private streaming = false;
   private heldByUser = false;
+  /** The last output this run accepted, to catch a model that re-emits its
+   * previous answer for the next step. Unset until the first acceptance. */
+  private lastAccepted: { output: unknown } | null = null;
 
   constructor(options: ConversationStepExecutorOptions) {
     this.sendPrompt = options.sendPrompt;
     this.maxNudges = options.maxNudges ?? DEFAULT_MAX_NUDGES;
+    this.maxRejections = options.maxRejections ?? DEFAULT_MAX_REJECTIONS;
   }
 
   /** Track agent streaming state (wire to agent_start / agent_settled). */
@@ -115,6 +135,7 @@ export class ConversationStepExecutor implements AgentStepExecutor {
         resolve,
         reject,
         nudgesSent: 0,
+        rejectionsSent: 0,
         cleanup: () => signal.removeEventListener("abort", onAbort),
         cleared,
         markCleared,
@@ -134,8 +155,20 @@ export class ConversationStepExecutor implements AgentStepExecutor {
     });
   }
 
-  /** Called by the `workflow` tool when the model submits a step output. */
-  async submit(stepId: string, attemptId: string, output: unknown): Promise<SubmissionResult> {
+  /**
+   * Called by the `workflow` tool when the model submits a step output. The
+   * output targets the single pending step; the model supplies no step or
+   * attempt id, so there is nothing for it to mislabel.
+   *
+   * ponytail: a gate-less self-loop (a node with an A→A edge and a shape-only
+   * validator) whose model re-submits the previous iteration's output on the
+   * next turn would have that stale output accepted for the new attempt. The
+   * captured-pending identity check below still prevents any cross-step
+   * corruption; the "call once, then end your turn" contract is the mitigation.
+   * Upgrade path: give looping nodes a content-aware validate(), or dedup
+   * identical consecutive same-node outputs here.
+   */
+  async submit(output: unknown): Promise<SubmissionResult> {
     const pending = this.pending;
     if (!pending) {
       return {
@@ -145,22 +178,18 @@ export class ConversationStepExecutor implements AgentStepExecutor {
       };
     }
     const expected = pending.request.contract.nodeId;
-    if (stepId !== expected) {
-      return {
-        accepted: false,
-        message: `Wrong step id ${JSON.stringify(stepId)}; the pending step is ${JSON.stringify(expected)}.`,
-      };
-    }
-    // Loops revisit the same node id, so a delayed duplicate submission from
-    // an earlier attempt would otherwise be accepted as this attempt's output.
-    const expectedAttempt = pending.request.contract.attemptId;
-    if (attemptId !== expectedAttempt) {
-      return {
-        accepted: false,
-        message: `Stale attempt id ${JSON.stringify(attemptId)} for step ${JSON.stringify(
-          stepId,
-        )}; the pending attempt is ${JSON.stringify(expectedAttempt)}. Use the attempt id from the latest step contract.`,
-      };
+    // Anti-echo: a model that re-emits its previous answer for this step is not
+    // producing this step's output. Reject it here so a wrong shape never
+    // reaches a downstream node that assumes the right one. Checked before
+    // validate() so a known duplicate costs nothing.
+    // ponytail: false-positive if two consecutive steps legitimately produce a
+    // byte-identical output; the rejection is correctable and the budget bounds
+    // it. Upgrade path: compare per-node instead of against the last accepted.
+    if (this.lastAccepted && sameOutput(output, this.lastAccepted.output)) {
+      return this.rejectSubmission(
+        pending,
+        `This output is identical to the previous step's output. Produce the result for step ${JSON.stringify(expected)}, not a copy of the last one.`,
+      );
     }
     // Race validation against the step being cleared: a hung `validate`
     // callback must not leave this tool call (and therefore pi) blocked after
@@ -175,24 +204,49 @@ export class ConversationStepExecutor implements AgentStepExecutor {
     if (result === null || this.pending !== pending) {
       return {
         accepted: false,
-        message: `Step ${JSON.stringify(stepId)} is no longer awaiting output.`,
+        message: `Step ${JSON.stringify(expected)} is no longer awaiting output.`,
       };
     }
     if (!result.ok) {
-      return {
-        accepted: false,
-        message: `Output rejected for step ${JSON.stringify(stepId)}: ${result.error}`,
-      };
+      return this.rejectSubmission(
+        pending,
+        `Output rejected for step ${JSON.stringify(expected)}: ${result.error}`,
+      );
     }
+    this.lastAccepted = { output };
     this.clearPending();
     pending.resolve({ output: result.value });
     return {
       accepted: true,
       message: [
-        `Output accepted for step ${JSON.stringify(stepId)}.`,
+        `Output accepted for step ${JSON.stringify(expected)}.`,
         "If the workflow continues, the next step arrives as a new user message. End your turn now.",
       ].join(" "),
     };
+  }
+
+  /**
+   * Bounce a bad submission back to the model, or fail the step once it has
+   * spent its rejection budget so a model that cannot produce valid output
+   * ends the node instead of grinding to the timeout.
+   */
+  private rejectSubmission(pending: PendingStep, message: string): SubmissionResult {
+    pending.rejectionsSent += 1;
+    if (pending.rejectionsSent >= this.maxRejections) {
+      this.clearPending();
+      pending.reject(
+        new Error(
+          `Step ${JSON.stringify(
+            pending.request.contract.nodeId,
+          )} rejected ${pending.rejectionsSent} submissions without a valid output`,
+        ),
+      );
+      return {
+        accepted: false,
+        message: `${message} The step's retry budget is spent; failing it.`,
+      };
+    }
+    return { accepted: false, message };
   }
 
   /**
@@ -222,13 +276,13 @@ export class ConversationStepExecutor implements AgentStepExecutor {
       return false;
     }
     pending.nudgesSent += 1;
-    const { nodeId, attemptId } = pending.request.contract;
+    const { nodeId } = pending.request.contract;
     try {
       this.sendPrompt({
         prompt: [
           `Reminder: workflow step ${JSON.stringify(nodeId)} is still awaiting your output.`,
           "Complete it by calling the `workflow` tool with:",
-          `{"step": ${JSON.stringify(nodeId)}, "attempt": ${JSON.stringify(attemptId)}, "output": <your result>}`,
+          `{"output": <your result>}`,
           `Expected output: ${pending.request.contract.expectedOutput ?? "a JSON object with your result"}`,
         ].join("\n"),
         streaming: this.streaming,

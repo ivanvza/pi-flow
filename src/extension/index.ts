@@ -664,11 +664,9 @@ export default function piWorkflows(pi: ExtensionAPI) {
     description: [
       "Submit the output for the pending workflow step.",
       "Only call this tool when a workflow step contract in the conversation asks you to.",
-      "Pass the exact step id from the contract and your result as the output.",
+      "Pass your result as the output.",
     ].join(" "),
     parameters: Type.Object({
-      step: Type.String({ description: "The step id from the workflow step contract" }),
-      attempt: Type.String({ description: "The attempt id from the workflow step contract" }),
       output: Type.Unknown({ description: "The step output, matching the expected output shape" }),
     }),
     async execute(_toolCallId, params) {
@@ -677,13 +675,16 @@ export default function piWorkflows(pi: ExtensionAPI) {
           "No workflow is running. Do not call the workflow tool outside a workflow.",
         );
       }
-      const result = await activeRun.executor.submit(params.step, params.attempt, params.output);
+      // The pending step is the sole target; capture its id for trace details
+      // before submit clears it.
+      const step = activeRun.executor.pendingStepId;
+      const result = await activeRun.executor.submit(params.output);
       if (!result.accepted) {
         throw new Error(result.message);
       }
       return {
         content: [{ type: "text", text: result.message }],
-        details: { step: params.step, accepted: true },
+        details: { step, accepted: true },
       };
     },
   });

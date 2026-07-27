@@ -333,7 +333,7 @@ describe("prompt delivery failures", () => {
     );
     expect(executor.pendingStepId).toBeNull();
     const second = executor.runAgentStep(request("b"), new AbortController().signal);
-    await expect(executor.submit("b", "b", { done: true })).resolves.toMatchObject({
+    await expect(executor.submit({ done: true })).resolves.toMatchObject({
       accepted: true,
     });
     await expect(second).resolves.toEqual({ output: { done: true } });
@@ -350,7 +350,7 @@ describe("hung validation after the step is cleared", () => {
     };
     const abort = new AbortController();
     const stepPromise = executor.runAgentStep(request, abort.signal);
-    const submission = executor.submit("step", "a1", {});
+    const submission = executor.submit({});
 
     abort.abort(new Error("timed out"));
     await expect(stepPromise).rejects.toThrow(/timed out/);
@@ -447,7 +447,7 @@ describe("stale submissions after a step is replaced", () => {
 
     const firstAbort = new AbortController();
     const firstStep = executor.runAgentStep(slowRequest, firstAbort.signal);
-    const staleSubmission = executor.submit("first", "a1", {});
+    const staleSubmission = executor.submit({});
 
     // The step times out while validation is still pending, and the engine
     // moves on to a new step.
@@ -467,7 +467,7 @@ describe("stale submissions after a step is replaced", () => {
     expect(stale.message).toMatch(/no longer awaiting/);
 
     // The newer step is still submittable.
-    const fresh = await executor.submit("first", "a2", { ok: 1 });
+    const fresh = await executor.submit({ ok: 1 });
     expect(fresh.accepted).toBe(true);
     await expect(secondStep).resolves.toEqual({ output: { ok: 1 } });
   });

@@ -7,10 +7,7 @@ import { makeTempDir } from "./helpers.js";
 
 type RegisteredTool = {
   name: string;
-  execute: (
-    toolCallId: string,
-    params: { step: string; attempt: string; output: unknown },
-  ) => Promise<unknown>;
+  execute: (toolCallId: string, params: { output: unknown }) => Promise<unknown>;
 };
 
 type RegisteredCommand = {
@@ -148,9 +145,8 @@ export default defineWorkflow({
   );
 }
 
-function stepFromPrompt(prompt: string): { step: string; attempt: string } | null {
-  const match = prompt.match(/"step": "([^"]+)", "attempt": "([^"]+)"/);
-  return match ? { step: match[1] as string, attempt: match[2] as string } : null;
+function hasStepContract(prompt: string): boolean {
+  return prompt.includes("Workflow step contract");
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
@@ -173,9 +169,8 @@ describe("pi-flow extension", () => {
       const harness = makeHarness({
         cwd,
         respond: (prompt, tool) => {
-          const contract = stepFromPrompt(prompt);
-          if (contract) {
-            void tool.execute("call-1", { ...contract, output: { reply: "hi" } });
+          if (hasStepContract(prompt)) {
+            void tool.execute("call-1", { output: { reply: "hi" } });
           }
         },
       });
@@ -225,9 +220,8 @@ export default defineWorkflow({
       const harness = makeHarness({
         cwd,
         respond: (prompt, tool) => {
-          const contract = stepFromPrompt(prompt);
-          if (contract) {
-            void tool.execute("call-1", { ...contract, output: { answer: "forty-two" } });
+          if (hasStepContract(prompt)) {
+            void tool.execute("call-1", { output: { answer: "forty-two" } });
           }
         },
       });
@@ -811,9 +805,9 @@ export default defineWorkflow({
   it("rejects tool calls outside a workflow", async () => {
     const cwd = await makeTempDir("pi-flow-ext");
     const harness = makeHarness({ cwd, respond: () => {} });
-    await expect(
-      harness.tool.execute("call-1", { step: "reply", attempt: "a1", output: {} }),
-    ).rejects.toThrow(/No workflow is running/);
+    await expect(harness.tool.execute("call-1", { output: {} })).rejects.toThrow(
+      /No workflow is running/,
+    );
   });
 
   it("cancels a running workflow", async () => {

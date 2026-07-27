@@ -17,7 +17,7 @@ function makeRequest(overrides: Partial<AgentStepRequest> = {}): AgentStepReques
   };
 }
 
-function makeExecutor(options: { maxNudges?: number } = {}) {
+function makeExecutor(options: { maxNudges?: number; maxRejections?: number } = {}) {
   const sent: PromptDelivery[] = [];
   const executor = new ConversationStepExecutor({
     sendPrompt: (delivery) => sent.push(delivery),
@@ -34,7 +34,7 @@ describe("ConversationStepExecutor", () => {
     expect(sent).toEqual([{ prompt: "Do the step", streaming: false }]);
     expect(executor.pendingStepId).toBe("step1");
 
-    const result = await executor.submit("step1", "a1", { x: 1 });
+    const result = await executor.submit({ x: 1 });
     expect(result.accepted).toBe(true);
     await expect(stepPromise).resolves.toEqual({ output: { x: 1 } });
     expect(executor.pendingStepId).toBeNull();
@@ -45,39 +45,46 @@ describe("ConversationStepExecutor", () => {
     executor.setStreaming(true);
     void executor.runAgentStep(makeRequest(), new AbortController().signal);
     expect(sent[0]?.streaming).toBe(true);
-    await executor.submit("step1", "a1", {});
+    await executor.submit({});
   });
 
   it("rejects submissions when no step is pending", async () => {
     const { executor } = makeExecutor();
-    const result = await executor.submit("step1", "a1", {});
+    const result = await executor.submit({});
     expect(result.accepted).toBe(false);
     expect(result.message).toMatch(/No workflow step/);
   });
 
-  it("rejects submissions for the wrong step id", async () => {
+  it("rejects a re-emitted duplicate of the previous step's output", async () => {
     const { executor } = makeExecutor();
-    const stepPromise = executor.runAgentStep(makeRequest(), new AbortController().signal);
+    const first = executor.runAgentStep(makeRequest(), new AbortController().signal);
+    await executor.submit({ x: 1 });
+    await first;
 
-    const result = await executor.submit("other", "a1", {});
-    expect(result.accepted).toBe(false);
-    expect(result.message).toMatch(/pending step is "step1"/);
-
-    await executor.submit("step1", "a1", {});
-    await stepPromise;
-  });
-
-  it("rejects submissions with a stale attempt id", async () => {
-    const { executor } = makeExecutor();
-    const stepPromise = executor.runAgentStep(makeRequest(), new AbortController().signal);
-
-    const stale = await executor.submit("step1", "a0", {});
-    expect(stale.accepted).toBe(false);
-    expect(stale.message).toMatch(/Stale attempt id "a0".*pending attempt is "a1"/);
+    const second = executor.runAgentStep(makeRequest(), new AbortController().signal);
+    const dup = await executor.submit({ x: 1 });
+    expect(dup.accepted).toBe(false);
+    expect(dup.message).toMatch(/identical to the previous step/);
     expect(executor.pendingStepId).toBe("step1");
 
-    await executor.submit("step1", "a1", {});
-    await stepPromise;
+    const fresh = await executor.submit({ x: 2 });
+    expect(fresh.accepted).toBe(true);
+    await second;
+  });
+
+  it("fails the step once the rejection budget is spent", async () => {
+    const { executor } = makeExecutor({ maxRejections: 3 });
+    const request = makeRequest({ accept: async () => ({ ok: false, error: "bad shape" }) });
+    const stepPromise = executor.runAgentStep(request, new AbortController().signal);
+
+    expect((await executor.submit({ a: 1 })).accepted).toBe(false);
+    expect((await executor.submit({ a: 2 })).accepted).toBe(false);
+    const last = await executor.submit({ a: 3 });
+    expect(last.accepted).toBe(false);
+    expect(last.message).toMatch(/retry budget is spent/);
+
+    await expect(stepPromise).rejects.toThrow(/rejected 3 submissions/);
+    expect(executor.pendingStepId).toBeNull();
   });
 
   it("surfaces validation errors and keeps the step pending", async () => {
@@ -90,12 +97,12 @@ describe("ConversationStepExecutor", () => {
     });
     const stepPromise = executor.runAgentStep(request, new AbortController().signal);
 
-    const rejected = await executor.submit("step1", "a1", { ok: false });
+    const rejected = await executor.submit({ ok: false });
     expect(rejected.accepted).toBe(false);
     expect(rejected.message).toMatch(/bad shape/);
     expect(executor.pendingStepId).toBe("step1");
 
-    const accepted = await executor.submit("step1", "a1", { ok: true });
+    const accepted = await executor.submit({ ok: true });
     expect(accepted.accepted).toBe(true);
     await stepPromise;
   });
@@ -123,7 +130,7 @@ describe("ConversationStepExecutor", () => {
     await expect(
       executor.runAgentStep(makeRequest(), new AbortController().signal),
     ).rejects.toThrow(/already awaiting/);
-    await executor.submit("step1", "a1", {});
+    await executor.submit({});
     await stepPromise;
   });
 

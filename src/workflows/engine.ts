@@ -612,13 +612,7 @@ export class WorkflowEngine {
       // may already be terminal.
       throw abortError(signal);
     }
-    const prompt = appendStepContract(
-      basePrompt,
-      workflow.name,
-      nodeId,
-      attemptId,
-      node.expectedOutput,
-    );
+    const prompt = appendStepContract(basePrompt, workflow.name, nodeId, node.expectedOutput);
     meta.promptText = prompt;
     await this.persist(runDir, state, {
       scope: "agent",
@@ -652,6 +646,13 @@ export class WorkflowEngine {
   ): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
     try {
       const normalized = normalizeAgentOutput(output);
+      const missing = missingExpectedKeys(node.expectedOutput, normalized);
+      if (missing.length > 0) {
+        return {
+          ok: false,
+          error: `Output is missing required key(s): ${missing.join(", ")}. Produce this step's result, not a copy of an earlier step. Expected shape: ${node.expectedOutput}`,
+        };
+      }
       const validated = node.validate ? await node.validate(normalized, context) : normalized;
       const value = validated === undefined ? null : validated;
       // Check here rather than after acceptance so a non-JSON validator
@@ -794,6 +795,38 @@ function abortRejection(signal: AbortSignal): Promise<never> {
  * Failing here turns a bad callback return value into a normal node failure
  * instead of corrupting the run state.
  */
+/**
+ * Keys the submission must include, derived from a node's `expectedOutput` when
+ * the author wrote it as a JSON object (the skill's convention). Only key
+ * presence is enforced — the values are freeform hints — which is enough to
+ * reject a wrong-shaped submission (a decision's `{route,reason}` handed to a
+ * content node) without false-positives on differing value hints. A non-JSON
+ * hint (the default, or a decision's `"a" | "b"` alternation) enforces nothing.
+ */
+function missingExpectedKeys(expectedOutput: string | undefined, value: unknown): string[] {
+  if (expectedOutput === undefined) {
+    return [];
+  }
+  let shape: unknown;
+  try {
+    shape = JSON.parse(expectedOutput);
+  } catch {
+    return [];
+  }
+  if (shape === null || typeof shape !== "object" || Array.isArray(shape)) {
+    return [];
+  }
+  const keys = Object.keys(shape);
+  if (keys.length === 0) {
+    return [];
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return keys;
+  }
+  const got = value as Record<string, unknown>;
+  return keys.filter((key) => got[key] === undefined);
+}
+
 function assertJsonSerializable(value: unknown, what: string): void {
   let encoded: string | undefined;
   try {
@@ -832,17 +865,16 @@ export function appendStepContract(
   prompt: string,
   workflowName: string,
   nodeId: string,
-  attemptId: string,
   expectedOutput: string | undefined,
 ): string {
   return [
     prompt.trimEnd(),
     "",
     "---",
-    `Workflow step contract (workflow: ${workflowName}, step: ${nodeId}, attempt: ${attemptId})`,
+    `Workflow step contract (workflow: ${workflowName}, step: ${nodeId})`,
     "",
     "Complete this step by calling the `workflow` tool exactly once with:",
-    `{"step": ${JSON.stringify(nodeId)}, "attempt": ${JSON.stringify(attemptId)}, "output": <your result>}`,
+    `{"output": <your result>}`,
     `Expected output: ${expectedOutput ?? "a JSON object with your result"}`,
     "The step is complete only after the workflow tool accepts the output.",
     "If the tool reports a validation error, correct the output and call it again.",

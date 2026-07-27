@@ -105,10 +105,15 @@ agent({
 
 The engine appends a step contract to the prompt (see below). When the model
 calls the tool, the output passes through normalization (a JSON string is
-parsed tolerantly) and then `validate`. If `validate` throws, the tool call
-returns an error and the model can retry within the same step. If the agent
-ends its turn without submitting, the extension nudges it, twice by default,
-then fails the step.
+parsed tolerantly), a key check, and then `validate`. When `expectedOutput` is
+written as a JSON object (the convention above), its top-level keys are
+enforced: a submission missing any of them is rejected with the missing keys
+named, so a model that returns the wrong shape (for example an earlier step's
+`{route, reason}`) is corrected at this node instead of poisoning a later one.
+Only key presence is checked, so the value hints stay freeform; a non-JSON
+`expectedOutput` enforces nothing. If `validate` throws, the model can retry
+within the same step. If the agent ends its turn without submitting, the
+extension nudges it, twice by default, then fails the step.
 
 ### compute
 
@@ -285,17 +290,19 @@ node with no outgoing edge (or no matching failure route) ends the run:
 ## The step contract
 
 The engine appends a contract block to every `agent` prompt naming the
-workflow, the step id, and the attempt id, quoting `expectedOutput` verbatim
-(default: `a JSON object with your result`), and instructing the model to call
-the `workflow` tool exactly once with `{"step", "attempt", "output"}`.
-`expectedOutput` is the only part of it a workflow controls.
+workflow and the step, quoting `expectedOutput` verbatim (default: `a JSON
+object with your result`), and instructing the model to call the `workflow`
+tool exactly once with `{"output"}`. `expectedOutput` is the only part of it a
+workflow controls.
 
-The `workflow` tool takes `{ step, attempt, output }`. Submissions are
-rejected (with a reason the model sees) when no step is pending, the step id
-is wrong, the attempt id belongs to an earlier attempt of the same node (loops
-revisit node ids, so each attempt gets a fresh id), or `validate` throws.
-Acceptance resolves the step and the engine advances; the next agent prompt
-arrives as a new user message in the same conversation.
+The `workflow` tool takes `{ output }` only — the model supplies no step or
+attempt id, so there is nothing to mislabel; the output targets the single
+pending step. Submissions are rejected (with a reason the model sees) when no
+step is pending, `validate` throws, or the output is a byte-for-byte copy of
+the previous step's output (a model re-emitting its last answer). A step that
+spends its rejection budget (default 5) fails fast instead of grinding to the
+node timeout. Acceptance resolves the step and the engine advances; the next
+agent prompt arrives as a new user message in the same conversation.
 
 ## Result presentation
 

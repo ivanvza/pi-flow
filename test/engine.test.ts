@@ -150,14 +150,34 @@ describe("WorkflowEngine", () => {
 
     const request = executor.requests[0];
     const prompt = request?.prompt ?? "";
-    const attemptId = request?.contract.attemptId ?? "";
     expect(prompt).toContain("Base prompt");
     expect(prompt).toContain("Workflow step contract");
-    expect(prompt).toContain(`{"step": "ask", "attempt": "${attemptId}", "output": <your result>}`);
+    expect(prompt).toContain(`{"output": <your result>}`);
     expect(prompt).toContain(`Expected output: { "x": 1 }`);
-    expect(prompt).toBe(
-      appendStepContract("Base prompt", "contract", "ask", attemptId, `{ "x": 1 }`),
-    );
+    expect(prompt).toBe(appendStepContract("Base prompt", "contract", "ask", `{ "x": 1 }`));
+  });
+
+  it("rejects an agent submission missing a declared expectedOutput key", async () => {
+    const workflow = defineWorkflow({
+      name: "shape",
+      startAt: "write",
+      nodes: {
+        write: agent({
+          prompt: () => "write",
+          expectedOutput: `{ "blogTitle": "string", "blogContent": "string" }`,
+        }),
+      },
+      edges: [],
+    });
+    // The model returns a decision-shaped output instead of the blog.
+    const executor = new ScriptedExecutor().respond("write", {
+      output: { route: "yes", reason: "x" },
+    });
+    const { engine } = await makeEngine(executor);
+
+    const { state } = await engine.run(workflow, {});
+    expect(state.status).toBe("failed");
+    expect(state.error).toMatch(/missing required key\(s\): blogTitle, blogContent/);
   });
 
   it("routes decisions through switch edges", async () => {
